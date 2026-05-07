@@ -36,7 +36,7 @@ class DispatchVerifier:
         if not dispatch_secret:
             raise ValueError("dispatch_secret must not be blank")
         self.processor_id = processor_id
-        self.dispatch_secret = dispatch_secret
+        self._dispatch_secret = dispatch_secret
         self.nonce_store = nonce_store or NonceStore(ttl_seconds=max_clock_skew_seconds)
         self.max_clock_skew_seconds = max_clock_skew_seconds
 
@@ -102,7 +102,7 @@ class DispatchVerifier:
         )
         expected_signature = "v1=" + _b64url(
             hmac.new(
-                self.dispatch_secret.encode("utf-8"),
+                self._dispatch_secret.encode("utf-8"),
                 canonical.encode("utf-8"),
                 hashlib.sha256,
             ).digest()
