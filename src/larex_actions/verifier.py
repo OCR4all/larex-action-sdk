@@ -52,6 +52,43 @@ class DispatchVerifier:
         if not raw_body:
             raise DispatchVerificationError("Dispatch body is empty", status_code=400)
 
+        normalized_headers = {key.lower(): value for key, value in headers.items()}
+        auth = _required_header(normalized_headers, AUTH_HEADER)
+        header_processor = _required_header(normalized_headers, PROCESSOR_HEADER)
+        header_run = _required_header(normalized_headers, RUN_HEADER)
+        timestamp = _required_header(normalized_headers, TIMESTAMP_HEADER)
+        nonce = _required_header(normalized_headers, NONCE_HEADER)
+        body_hash = _required_header(normalized_headers, BODY_HASH_HEADER)
+        signature = _required_header(normalized_headers, SIGNATURE_HEADER)
+
+        if auth != "hmac-sha256;v=1":
+            raise DispatchVerificationError("Unsupported dispatch auth header")
+        if header_processor != self.processor_id:
+            raise DispatchVerificationError("Processor id mismatch")
+
+        expected_body_hash = _b64url(hashlib.sha256(raw_body).digest())
+        if not hmac.compare_digest(expected_body_hash, body_hash):
+            raise DispatchVerificationError("Body hash mismatch")
+
+        canonical = canonical_dispatch_request(
+            method=method,
+            path_and_query=path_and_query,
+            run_id=header_run,
+            processor_id=header_processor,
+            timestamp=timestamp,
+            nonce=nonce,
+            body_hash=body_hash,
+        )
+        expected_signature = "v1=" + _b64url(
+            hmac.new(
+                self._dispatch_secret.encode("utf-8"),
+                canonical.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        )
+        if not hmac.compare_digest(expected_signature, signature):
+            raise DispatchVerificationError("Dispatch signature mismatch")
+
         try:
             payload_data = json.loads(raw_body)
         except json.JSONDecodeError as exc:
@@ -68,17 +105,6 @@ class DispatchVerifier:
                 status_code=400,
             ) from exc
 
-        normalized_headers = {key.lower(): value for key, value in headers.items()}
-        auth = _required_header(normalized_headers, AUTH_HEADER)
-        header_processor = _required_header(normalized_headers, PROCESSOR_HEADER)
-        header_run = _required_header(normalized_headers, RUN_HEADER)
-        timestamp = _required_header(normalized_headers, TIMESTAMP_HEADER)
-        nonce = _required_header(normalized_headers, NONCE_HEADER)
-        body_hash = _required_header(normalized_headers, BODY_HASH_HEADER)
-        signature = _required_header(normalized_headers, SIGNATURE_HEADER)
-
-        if auth != "hmac-sha256;v=1":
-            raise DispatchVerificationError("Unsupported dispatch auth header")
         if header_processor != payload.processor_id or payload.processor_id != self.processor_id:
             raise DispatchVerificationError("Processor id mismatch")
         if header_run != payload.run_id:
@@ -86,29 +112,6 @@ class DispatchVerifier:
 
         self._verify_timestamp(timestamp)
         self.nonce_store.check_and_store(nonce)
-
-        expected_body_hash = _b64url(hashlib.sha256(raw_body).digest())
-        if not hmac.compare_digest(expected_body_hash, body_hash):
-            raise DispatchVerificationError("Body hash mismatch")
-
-        canonical = canonical_dispatch_request(
-            method=method,
-            path_and_query=path_and_query,
-            run_id=payload.run_id,
-            processor_id=payload.processor_id,
-            timestamp=timestamp,
-            nonce=nonce,
-            body_hash=body_hash,
-        )
-        expected_signature = "v1=" + _b64url(
-            hmac.new(
-                self._dispatch_secret.encode("utf-8"),
-                canonical.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        )
-        if not hmac.compare_digest(expected_signature, signature):
-            raise DispatchVerificationError("Dispatch signature mismatch")
 
         return payload
 

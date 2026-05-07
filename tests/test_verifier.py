@@ -81,3 +81,22 @@ def test_rejects_replayed_nonce() -> None:
     body, headers = signed_dispatch(nonce="same-nonce")
     with pytest.raises(DispatchVerificationError):
         verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+
+def test_rejected_dispatch_does_not_burn_nonce() -> None:
+    nonce_store = NonceStore()
+    verifier = DispatchVerifier(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        nonce_store=nonce_store,
+    )
+    body, headers = signed_dispatch(nonce="reusable-after-rejection")
+    headers["X-LAREX-Action-Signature"] = "v1=bad"
+
+    with pytest.raises(DispatchVerificationError):
+        verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+    body, headers = signed_dispatch(nonce="reusable-after-rejection")
+    payload = verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+    assert payload.run_id == "run-1"

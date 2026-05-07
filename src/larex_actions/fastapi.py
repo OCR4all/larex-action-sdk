@@ -52,7 +52,11 @@ def create_larex_action_app(
     @fastapi_app.post("/dispatch")
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
         body = await request.body()
-        path_and_query = request.url.path
+        raw_path = request.scope.get("raw_path")
+        if isinstance(raw_path, bytes):
+            path_and_query = raw_path.decode("ascii", errors="surrogateescape")
+        else:
+            path_and_query = request.url.path
         if request.url.query:
             path_and_query += f"?{request.url.query}"
         try:
