@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+RunStatus = Literal["running", "failed"]
+ResultStatus = Literal["completed", "failed"]
+FileType = Literal["image", "xml"]
 
 
 class LarexModel(BaseModel):
@@ -54,12 +58,12 @@ class HeartbeatResponse(LarexModel):
 class ResultFile(LarexModel):
     field_name: str = Field(alias="fieldName")
     page_id: str = Field(alias="pageId")
-    type: str
+    type: FileType
     variant: str
     file_name: str = Field(alias="fileName")
 
 
 class ResultManifest(LarexModel):
-    status: str = "completed"
+    status: ResultStatus = "completed"
     message: str | None = None
     files: list[ResultFile] = Field(default_factory=list)

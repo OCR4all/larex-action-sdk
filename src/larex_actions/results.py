@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from .models import ResultFile, ResultManifest
+from .models import FileType, ResultFile, ResultManifest, ResultStatus
 
 FileContent = bytes | Path
 HttpxFile = tuple[str, tuple[str, bytes | BinaryIO | str, str]]
@@ -15,7 +15,7 @@ HttpxFile = tuple[str, tuple[str, bytes | BinaryIO | str, str]]
 class _PendingResultFile:
     field_name: str
     page_id: str
-    type: str
+    type: FileType
     variant: str
     file_name: str
     mime_type: str
@@ -111,13 +111,13 @@ class ResultBuilder:
             type_="xml",
         )
 
-    def manifest(self, *, status: str = "completed", message: str | None = None) -> ResultManifest:
+    def manifest(self, *, status: ResultStatus = "completed", message: str | None = None) -> ResultManifest:
         return ResultManifest(status=status, message=message, files=self.files)
 
     def httpx_files(
         self,
         *,
-        status: str = "completed",
+        status: ResultStatus = "completed",
         message: str | None = None,
         exit_stack: ExitStack,
     ) -> list[HttpxFile]:
@@ -149,7 +149,7 @@ class ResultBuilder:
         file_name: str,
         variant: str,
         mime_type: str,
-        type_: str,
+        type_: FileType,
     ) -> None:
         if not page_id:
             raise ValueError("page_id must not be blank")

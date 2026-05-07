@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from .exceptions import ActionCancelled
-from .models import ActionDispatchPayload, ActionFile, ActionInput, HeartbeatResponse
+from .models import ActionDispatchPayload, ActionFile, ActionInput, HeartbeatResponse, RunStatus, ResultStatus
 from .results import ResultBuilder
 
 
@@ -68,7 +68,7 @@ class ActionClient:
         status_message: str | None = None,
         *,
         log: str | None = None,
-        status: str = "running",
+        status: RunStatus = "running",
         error_message: str | None = None,
         raise_on_cancel: bool = False,
     ) -> HeartbeatResponse:
@@ -120,7 +120,7 @@ class ActionClient:
         self,
         results: ResultBuilder,
         *,
-        status: str = "completed",
+        status: ResultStatus = "completed",
         message: str | None = None,
     ) -> Mapping[str, Any]:
         return await self._post_results(results, status=status, message=message)
@@ -144,7 +144,7 @@ class ActionClient:
         self,
         results: ResultBuilder,
         *,
-        status: str,
+        status: ResultStatus,
         message: str | None,
     ) -> Mapping[str, Any]:
         with ExitStack() as exit_stack:

@@ -5,9 +5,12 @@ from .models import (
     ActionFile,
     ActionInput,
     ActionPage,
+    FileType,
     HeartbeatResponse,
     ResultFile,
     ResultManifest,
+    ResultStatus,
+    RunStatus,
 )
 from .nonce import NonceStore
 from .results import ResultBuilder
@@ -23,10 +26,13 @@ __all__ = [
     "ActionPage",
     "DispatchVerificationError",
     "DispatchVerifier",
+    "FileType",
     "HeartbeatResponse",
     "LarexActionError",
     "NonceStore",
     "ResultBuilder",
     "ResultFile",
     "ResultManifest",
+    "ResultStatus",
+    "RunStatus",
 ]
