@@ -1,0 +1,9 @@
+.venv/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+dist/
+htmlcov/
+coverage.xml
+__pycache__/
+*.py[cod]

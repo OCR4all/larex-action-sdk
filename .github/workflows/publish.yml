@@ -1,0 +1,49 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*rc*"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/larex-action-sdk
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pyright
+      - run: uv run pytest
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-testpypi:
+    if: ${{ github.event_name == 'push' && contains(github.ref_name, 'rc') }}
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/larex-action-sdk
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

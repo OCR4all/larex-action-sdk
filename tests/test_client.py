@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import httpx
+import pytest
+
+from larex_actions import ActionCancelled, ActionClient, ResultBuilder
+
+from .conftest import dispatch_payload
+
+
+@pytest.mark.asyncio
+async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"] == "Bearer run-secret"
+        if request.url.path.endswith("/input"):
+            return httpx.Response(
+                200,
+                json={
+                    "runId": "run-1",
+                    "processorKey": "mock-image-copy",
+                    "projectId": "project-1",
+                    "parameters": {},
+                    "pages": [
+                        {
+                            "id": "page-1",
+                            "name": "001",
+                            "images": [],
+                            "xml": [
+                                {
+                                    "id": "xml-1",
+                                    "fileName": "001.xml",
+                                    "variant": "default",
+                                    "mimeType": "application/xml",
+                                    "downloadUrl": "https://larex.example/file/xml-1",
+                                }
+                            ],
+                        }
+                    ],
+                    "cancelRequested": False,
+                },
+            )
+        if request.url.path.endswith("/heartbeat"):
+            return httpx.Response(200, json={"cancelRequested": False})
+        if request.url.path == "/file/xml-1":
+            return httpx.Response(200, content=b"<PcGts/>")
+        if request.url.path.endswith("/results"):
+            body = request.content
+            assert b"manifest.json" in body
+            assert b"page-1" in body
+            assert b"action-copy" in body
+            return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+        )
+        action_input = await client.pull_input()
+        heartbeat = await client.heartbeat(50, "Halfway", raise_on_cancel=True)
+        xml_bytes = await client.download_bytes(action_input.pages[0].xml[0])
+        xml_path = await client.download_to_path(
+            action_input.pages[0].xml[0],
+            tmp_path / "copy.xml",
+        )
+        results = ResultBuilder()
+        results.add_xml_bytes("page-1", xml_bytes, "copy.xml", variant="action-copy")
+        await client.complete(results, "Done")
+
+    assert heartbeat.cancel_requested is False
+    assert xml_path.read_bytes() == b"<PcGts/>"
+    assert [request.url.path for request in requests] == [
+        "/public/actions/runs/run-1/input",
+        "/public/actions/runs/run-1/heartbeat",
+        "/file/xml-1",
+        "/file/xml-1",
+        "/public/actions/runs/run-1/results",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_raise_on_cancel() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"cancelRequested": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(ActionCancelled):
+            await client.heartbeat(raise_on_cancel=True)
+
+
+def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    image_path.write_bytes(b"png")
+    results = ResultBuilder()
+    results.add_image_path("page-1", image_path, variant="copy", mime_type="image/png")
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page-copy", variant="copy")
+
+    manifest = results.manifest(message="Done")
+
+    assert manifest.message == "Done"
+    assert [file.type for file in manifest.files] == ["image", "xml"]
+    assert manifest.files[1].file_name == "page-copy.xml"
+
+
+def dispatch_payload_model():
+    from larex_actions import ActionDispatchPayload
+
+    return ActionDispatchPayload.model_validate(dispatch_payload())
