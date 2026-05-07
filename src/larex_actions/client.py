@@ -8,7 +8,14 @@ from typing import Any
 import httpx
 
 from .exceptions import ActionCancelled
-from .models import ActionDispatchPayload, ActionFile, ActionInput, HeartbeatResponse, RunStatus, ResultStatus
+from .models import (
+    ActionDispatchPayload,
+    ActionFile,
+    ActionInput,
+    HeartbeatResponse,
+    ResultStatus,
+    RunStatus,
+)
 from .results import ResultBuilder
 
 
@@ -214,6 +221,15 @@ class ActionContext:
         message: str | None = None,
     ) -> Mapping[str, Any]:
         return await self.client.complete(results, message)
+
+    async def upload_results(
+        self,
+        results: ResultBuilder,
+        *,
+        status: ResultStatus = "completed",
+        message: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self.client.upload_results(results, status=status, message=message)
 
     async def fail(self, message: str, *, log: str | None = None) -> HeartbeatResponse:
         return await self.client.fail(message, log=log)

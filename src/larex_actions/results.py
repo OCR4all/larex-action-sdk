@@ -111,7 +111,9 @@ class ResultBuilder:
             type_="xml",
         )
 
-    def manifest(self, *, status: ResultStatus = "completed", message: str | None = None) -> ResultManifest:
+    def manifest(
+        self, *, status: ResultStatus = "completed", message: str | None = None
+    ) -> ResultManifest:
         return ResultManifest(status=status, message=message, files=self.files)
 
     def httpx_files(
