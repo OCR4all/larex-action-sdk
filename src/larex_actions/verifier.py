@@ -151,7 +151,7 @@ def canonical_dispatch_request(
 
 def _required_header(headers: Mapping[str, str], name: str) -> str:
     value = headers.get(name)
-    if value is None or not value:
+    if not value:
         raise DispatchVerificationError(f"Missing dispatch header: {name}")
     return value
 
