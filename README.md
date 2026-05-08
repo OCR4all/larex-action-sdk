@@ -43,7 +43,6 @@ async def process(ctx: ActionContext) -> None:
                 page_id=page.id,
                 content=xml_bytes,
                 file_name=f"{page.name}-processed.xml",
-                variant="processed",
             )
 
     await ctx.complete(results, "Done")

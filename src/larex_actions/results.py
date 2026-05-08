@@ -16,7 +16,7 @@ class _PendingResultFile:
     field_name: str
     page_id: str
     type: FileType
-    variant: str
+    variant: str | None
     file_name: str
     mime_type: str
     content: FileContent
@@ -62,14 +62,12 @@ class ResultBuilder:
         page_id: str,
         content: bytes,
         file_name: str,
-        *,
-        variant: str,
     ) -> None:
         self._add_file(
             page_id=page_id,
             content=content,
             file_name=_ensure_xml_file_name(file_name),
-            variant=variant,
+            variant=None,
             mime_type="application/xml",
             type_="xml",
         )
@@ -98,7 +96,6 @@ class ResultBuilder:
         page_id: str,
         path: str | Path,
         *,
-        variant: str,
         file_name: str | None = None,
     ) -> None:
         path_value = Path(path)
@@ -106,7 +103,7 @@ class ResultBuilder:
             page_id=page_id,
             content=path_value,
             file_name=_ensure_xml_file_name(file_name or path_value.name),
-            variant=variant,
+            variant=None,
             mime_type="application/xml",
             type_="xml",
         )
@@ -149,7 +146,7 @@ class ResultBuilder:
         page_id: str,
         content: FileContent,
         file_name: str,
-        variant: str,
+        variant: str | None,
         mime_type: str,
         type_: FileType,
     ) -> None:
@@ -157,7 +154,7 @@ class ResultBuilder:
             raise ValueError("page_id must not be blank")
         if not file_name:
             raise ValueError("file_name must not be blank")
-        if not variant:
+        if type_ == "image" and not variant:
             raise ValueError("variant must not be blank")
         field_name = f"file_{len(self._files)}"
         self._files.append(

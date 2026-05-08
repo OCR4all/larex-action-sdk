@@ -59,7 +59,7 @@ class ResultFile(LarexModel):
     field_name: str = Field(alias="fieldName")
     page_id: str = Field(alias="pageId")
     type: FileType
-    variant: str
+    variant: str | None = None
     file_name: str = Field(alias="fileName")
 
 

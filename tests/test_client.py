@@ -52,7 +52,7 @@ async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> No
             body = request.content
             assert b"manifest.json" in body
             assert b"page-1" in body
-            assert b"action-copy" in body
+            assert b"copy.xml" in body
             return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
         raise AssertionError(f"Unexpected request: {request.url}")
 
@@ -69,7 +69,7 @@ async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> No
             tmp_path / "copy.xml",
         )
         results = ResultBuilder()
-        results.add_xml_bytes("page-1", xml_bytes, "copy.xml", variant="action-copy")
+        results.add_xml_bytes("page-1", xml_bytes, "copy.xml")
         await client.complete(results, "Done")
 
     assert heartbeat.cancel_requested is False
@@ -99,7 +99,7 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     image_path.write_bytes(b"png")
     results = ResultBuilder()
     results.add_image_path("page-1", image_path, variant="copy", mime_type="image/png")
-    results.add_xml_bytes("page-1", b"<PcGts/>", "page-copy", variant="copy")
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page-copy")
 
     manifest = results.manifest(message="Done")
 
