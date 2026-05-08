@@ -55,6 +55,18 @@ def test_rejects_wrong_payload_processor() -> None:
         )
 
 
+def test_rejects_unsupported_protocol_version() -> None:
+    body, headers = signed_dispatch(payload=dispatch_payload(protocolVersion=2))
+
+    with pytest.raises(DispatchVerificationError):
+        DispatchVerifier(processor_id=PROCESSOR_ID, dispatch_secret=SECRET).verify(
+            method="POST",
+            path_and_query="/dispatch",
+            headers=headers,
+            body=body,
+        )
+
+
 def test_rejects_stale_timestamp() -> None:
     timestamp = (datetime.now(UTC) - timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
     body, headers = signed_dispatch(timestamp=timestamp)

@@ -1,6 +1,7 @@
 from .client import ActionClient, ActionContext
 from .exceptions import ActionCancelled, DispatchVerificationError, LarexActionError
 from .models import (
+    PROTOCOL_VERSION,
     ActionDispatchPayload,
     ActionFile,
     ActionInput,
@@ -17,6 +18,7 @@ from .results import ResultBuilder
 from .verifier import DispatchVerifier
 
 __all__ = [
+    "PROTOCOL_VERSION",
     "ActionCancelled",
     "ActionClient",
     "ActionContext",

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 RunStatus = Literal["running", "failed"]
 ResultStatus = Literal["completed", "failed"]
 FileType = Literal["image", "xml"]
+PROTOCOL_VERSION = 1
 
 
 class LarexModel(BaseModel):
@@ -14,6 +15,7 @@ class LarexModel(BaseModel):
 
 
 class ActionDispatchPayload(LarexModel):
+    protocol_version: Literal[1] = Field(alias="protocolVersion")
     run_id: str = Field(alias="runId")
     processor_id: str = Field(alias="processorId")
     workspace_id: str = Field(alias="workspaceId")
@@ -43,6 +45,7 @@ class ActionPage(LarexModel):
 
 
 class ActionInput(LarexModel):
+    protocol_version: Literal[1] = Field(alias="protocolVersion")
     run_id: str = Field(alias="runId")
     processor_key: str = Field(alias="processorKey")
     project_id: str = Field(alias="projectId")
@@ -64,6 +67,7 @@ class ResultFile(LarexModel):
 
 
 class ResultManifest(LarexModel):
+    protocol_version: Literal[1] = Field(default=PROTOCOL_VERSION, alias="protocolVersion")
     status: ResultStatus = "completed"
     message: str | None = None
     files: list[ResultFile] = Field(default_factory=list)

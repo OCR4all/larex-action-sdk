@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from contextlib import ExitStack
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
+from pydantic import BaseModel
 
 from .exceptions import ActionCancelled
 from .models import (
@@ -17,6 +18,8 @@ from .models import (
     RunStatus,
 )
 from .results import ResultBuilder
+
+ParameterModelT = TypeVar("ParameterModelT", bound=BaseModel)
 
 
 class ActionClient:
@@ -185,6 +188,9 @@ class ActionContext:
     def parameters(self) -> dict[str, Any]:
         return self.payload.parameters
 
+    def parameters_as(self, model: type[ParameterModelT]) -> ParameterModelT:
+        return model.model_validate(self.payload.parameters)
+
     async def pull_input(self) -> ActionInput:
         return await self.client.pull_input()
 
@@ -201,6 +207,50 @@ class ActionContext:
             status_message=status_message,
             log=log,
             raise_on_cancel=raise_on_cancel,
+        )
+
+    async def log(
+        self,
+        message: str,
+        *,
+        progress_percent: int | None = None,
+        status_message: str | None = None,
+        raise_on_cancel: bool = False,
+    ) -> HeartbeatResponse:
+        return await self.heartbeat(
+            progress_percent=progress_percent,
+            status_message=status_message,
+            log=message,
+            raise_on_cancel=raise_on_cancel,
+        )
+
+    @asynccontextmanager
+    async def step(
+        self,
+        name: str,
+        *,
+        progress_percent: int | None = None,
+    ) -> AsyncGenerator[None]:
+        await self.heartbeat(
+            progress_percent=progress_percent,
+            status_message=name,
+            log=f"step:start {name}",
+            raise_on_cancel=True,
+        )
+        try:
+            yield
+        except Exception:
+            await self.heartbeat(
+                progress_percent=progress_percent,
+                status_message=f"{name} failed",
+                log=f"step:failed {name}",
+            )
+            raise
+        await self.heartbeat(
+            progress_percent=progress_percent,
+            status_message=f"{name} complete",
+            log=f"step:complete {name}",
+            raise_on_cancel=True,
         )
 
     async def raise_if_cancelled(self) -> None:

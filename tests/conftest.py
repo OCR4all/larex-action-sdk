@@ -15,6 +15,7 @@ PROCESSOR_ID = "mock-image-copy"
 
 def dispatch_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "protocolVersion": 1,
         "runId": "run-1",
         "processorId": PROCESSOR_ID,
         "workspaceId": "workspace-1",

@@ -36,14 +36,14 @@ async def process(ctx: ActionContext) -> None:
     results = ctx.result_builder()
 
     for page in action_input.pages:
-        await ctx.heartbeat(25, f"Processing {page.name}", raise_on_cancel=True)
-        if page.xml:
-            xml_bytes = await ctx.download_bytes(page.xml[0])
-            results.add_xml_bytes(
-                page_id=page.id,
-                content=xml_bytes,
-                file_name=f"{page.name}-processed.xml",
-            )
+        async with ctx.step(f"Processing {page.name}", progress_percent=25):
+            if page.xml:
+                xml_bytes = await ctx.download_bytes(page.xml[0])
+                results.add_xml_bytes(
+                    page_id=page.id,
+                    content=xml_bytes,
+                    file_name=f"{page.name}-processed.xml",
+                )
 
     await ctx.complete(results, "Done")
 

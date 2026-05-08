@@ -4,8 +4,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
-from larex_actions import ActionCancelled, ActionClient, ResultBuilder
+from larex_actions import ActionCancelled, ActionClient, ActionContext, ResultBuilder
 
 from .conftest import dispatch_payload
 
@@ -21,6 +22,7 @@ async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> No
             return httpx.Response(
                 200,
                 json={
+                    "protocolVersion": 1,
                     "runId": "run-1",
                     "processorKey": "mock-image-copy",
                     "projectId": "project-1",
@@ -51,6 +53,7 @@ async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> No
         if request.url.path.endswith("/results"):
             body = request.content
             assert b"manifest.json" in body
+            assert b'"protocolVersion":1' in body
             assert b"page-1" in body
             assert b"copy.xml" in body
             return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
@@ -104,8 +107,42 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     manifest = results.manifest(message="Done")
 
     assert manifest.message == "Done"
+    assert manifest.protocol_version == 1
     assert [file.type for file in manifest.files] == ["image", "xml"]
     assert manifest.files[1].file_name == "page-copy.xml"
+
+
+@pytest.mark.asyncio
+async def test_context_validates_typed_parameters() -> None:
+    class Parameters(BaseModel):
+        threshold: float
+
+    payload = dispatch_payload_model()
+    async with ActionClient.from_dispatch(payload) as client:
+        context = ActionContext(payload=payload, client=client)
+
+        assert context.parameters_as(Parameters).threshold == 0.5
+
+
+@pytest.mark.asyncio
+async def test_context_step_emits_start_and_complete_logs() -> None:
+    heartbeat_payloads: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        heartbeat_payloads.append(request.content.decode())
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        async with context.step("Copy XML", progress_percent=30):
+            pass
+
+    assert len(heartbeat_payloads) == 2
+    assert "step:start Copy XML" in heartbeat_payloads[0]
+    assert "step:complete Copy XML" in heartbeat_payloads[1]
 
 
 def dispatch_payload_model():
