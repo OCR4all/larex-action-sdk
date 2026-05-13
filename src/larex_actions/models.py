@@ -7,11 +7,24 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 RunStatus = Literal["running", "failed"]
 ResultStatus = Literal["completed", "failed"]
 FileType = Literal["image", "xml"]
+ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
+PatchType = Literal["TEXT_LINE_TEXT", "LAYOUT_XML"]
 PROTOCOL_VERSION = 1
 
 
 class LarexModel(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+
+class TargetSelectionPage(LarexModel):
+    page_id: str = Field(alias="pageId")
+    region_ids: list[str] = Field(default_factory=list, alias="regionIds")
+    text_line_ids: list[str] = Field(default_factory=list, alias="textLineIds")
+
+
+class ActionTargetSelection(LarexModel):
+    type: ActionTarget = "PAGE"
+    pages: list[TargetSelectionPage] = Field(default_factory=list)
 
 
 class ActionDispatchPayload(LarexModel):
@@ -21,11 +34,16 @@ class ActionDispatchPayload(LarexModel):
     workspace_id: str = Field(alias="workspaceId")
     project_id: str = Field(alias="projectId")
     page_ids: list[str] = Field(alias="pageIds", default_factory=list)
+    target_selection: ActionTargetSelection | None = Field(default=None, alias="targetSelection")
     parameters: dict[str, Any] = Field(default_factory=dict)
     secret: SecretStr
     pull_url: str = Field(alias="pullUrl")
     heartbeat_url: str = Field(alias="heartbeatUrl")
     result_url: str = Field(alias="resultUrl")
+
+    @property
+    def target(self) -> ActionTargetSelection | None:
+        return self.target_selection
 
 
 class ActionFile(LarexModel):
@@ -35,6 +53,34 @@ class ActionFile(LarexModel):
     mime_type: str | None = Field(default=None, alias="mimeType")
     file_size: int | None = Field(default=None, alias="fileSize")
     download_url: str = Field(alias="downloadUrl")
+
+
+class ActionTargetRegion(LarexModel):
+    id: str
+    kind: str | None = None
+    coords: dict[str, Any] | None = None
+    text_line_ids: list[str] = Field(default_factory=list, alias="textLineIds")
+
+
+class ActionTargetTextLine(LarexModel):
+    id: str
+    parent_region_id: str | None = Field(default=None, alias="parentRegionId")
+    coords: dict[str, Any] | None = None
+    baseline: dict[str, Any] | None = None
+    text_content_variants: list[dict[str, Any]] = Field(
+        default_factory=list, alias="textContentVariants"
+    )
+
+
+class ActionInputTargetPage(LarexModel):
+    page_id: str = Field(alias="pageId")
+    regions: list[ActionTargetRegion] = Field(default_factory=list)
+    text_lines: list[ActionTargetTextLine] = Field(default_factory=list, alias="textLines")
+
+
+class ActionInputTargetSelection(LarexModel):
+    type: ActionTarget = "PAGE"
+    pages: list[ActionInputTargetPage] = Field(default_factory=list)
 
 
 class ActionPage(LarexModel):
@@ -51,7 +97,14 @@ class ActionInput(LarexModel):
     project_id: str = Field(alias="projectId")
     parameters: dict[str, Any] = Field(default_factory=dict)
     pages: list[ActionPage] = Field(default_factory=list)
+    target_selection: ActionInputTargetSelection | None = Field(
+        default=None, alias="targetSelection"
+    )
     cancel_requested: bool = Field(default=False, alias="cancelRequested")
+
+    @property
+    def target(self) -> ActionInputTargetSelection | None:
+        return self.target_selection
 
 
 class HeartbeatResponse(LarexModel):
@@ -66,8 +119,21 @@ class ResultFile(LarexModel):
     file_name: str = Field(alias="fileName")
 
 
+class ResultPatch(LarexModel):
+    type: PatchType
+    page_id: str = Field(alias="pageId")
+    region_id: str | None = Field(default=None, alias="regionId")
+    text_line_id: str | None = Field(default=None, alias="textLineId")
+    text: str | None = None
+    confidence: float | None = None
+    index: int | None = None
+    field_name: str | None = Field(default=None, alias="fieldName")
+    file_name: str | None = Field(default=None, alias="fileName")
+
+
 class ResultManifest(LarexModel):
     protocol_version: Literal[1] = Field(default=PROTOCOL_VERSION, alias="protocolVersion")
     status: ResultStatus = "completed"
     message: str | None = None
     files: list[ResultFile] = Field(default_factory=list)
+    patches: list[ResultPatch] = Field(default_factory=list)

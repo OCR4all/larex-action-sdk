@@ -11,6 +11,7 @@ from larex_actions import (
     ActionCancelled,
     ActionClient,
     ActionContext,
+    ActionInput,
     ActionUrlSecurityError,
     ResultBuilder,
 )
@@ -117,6 +118,56 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     assert manifest.protocol_version == 1
     assert [file.type for file in manifest.files] == ["image", "xml"]
     assert manifest.files[1].file_name == "page-copy.xml"
+
+
+def test_result_builder_manifest_with_target_patches() -> None:
+    results = ResultBuilder()
+    results.add_text_line_text("page-1", "line-1", "Recognized text", confidence=0.91)
+    results.add_layout_xml_bytes("page-1", b"<PcGts/>", "layout")
+
+    manifest = results.manifest(message="Done")
+
+    assert [patch.type for patch in manifest.patches] == ["TEXT_LINE_TEXT", "LAYOUT_XML"]
+    assert manifest.patches[0].text_line_id == "line-1"
+    assert manifest.patches[0].confidence == 0.91
+    assert manifest.patches[1].field_name == "patch_file_0"
+    assert manifest.patches[1].file_name == "layout.xml"
+
+
+def test_action_input_parses_target_metadata() -> None:
+    action_input = ActionInput.model_validate(
+        {
+            "protocolVersion": 1,
+            "runId": "run-1",
+            "processorKey": "ocr",
+            "projectId": "project-1",
+            "parameters": {},
+            "pages": [],
+            "targetSelection": {
+                "type": "TEXT_LINE",
+                "pages": [
+                    {
+                        "pageId": "page-1",
+                        "regions": [],
+                        "textLines": [
+                            {
+                                "id": "line-1",
+                                "parentRegionId": "region-1",
+                                "textContentVariants": [{"index": 0, "text": "old"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "cancelRequested": False,
+        }
+    )
+
+    target = action_input.target_selection
+    assert target is not None
+    assert action_input.target is target
+    assert target.type == "TEXT_LINE"
+    assert target.pages[0].text_lines[0].parent_region_id == "region-1"
 
 
 def test_client_rejects_cross_origin_callback_urls() -> None:

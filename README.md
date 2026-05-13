@@ -35,6 +35,17 @@ async def process(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
     results = ctx.result_builder()
 
+    if action_input.target_selection and action_input.target_selection.type == "TEXT_LINE":
+        for target_page in action_input.target_selection.pages:
+            for line in target_page.text_lines:
+                results.add_text_line_text(
+                    page_id=target_page.page_id,
+                    text_line_id=line.id,
+                    text="recognized text",
+                )
+        await ctx.complete(results, "Updated selected text lines")
+        return
+
     for page in action_input.pages:
         async with ctx.step(f"Processing {page.name}", progress_percent=25):
             if page.xml:
@@ -54,6 +65,25 @@ app = create_larex_action_app(
     handler=process,
 )
 ```
+
+## Target-Aware Runs
+
+LAREX can dispatch page, region, and textline targeted runs. The SDK exposes the
+requested target on both dispatch and pulled input payloads:
+
+```python
+payload_target = ctx.payload.target
+action_input = await ctx.pull_input()
+input_target = action_input.target
+```
+
+Processors still receive full page files according to the Action YAML inputs.
+Target metadata contains selected region/textline ids, geometry, and current text;
+LAREX does not generate crops.
+
+Use `ResultBuilder.add_text_line_text(...)` for OCR/HTR text patches and
+`ResultBuilder.add_layout_xml_bytes(...)` or `add_layout_xml_path(...)` for layout
+PAGE XML patches.
 
 ## Framework-Neutral Dispatch Verification
 
