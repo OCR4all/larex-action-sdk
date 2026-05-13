@@ -3,7 +3,7 @@ from __future__ import annotations
 # pyright: reportUnusedFunction=false
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 
 from .client import ActionClient, ActionContext
 from .exceptions import ActionCancelled, DispatchVerificationError
@@ -32,6 +32,10 @@ def create_larex_action_app(
     nonce_store: NonceStore | None = None,
     app: FastAPI | None = None,
     client_factory: ClientFactory | None = None,
+    enforce_url_security: bool = True,
+    allowed_callback_origins: Iterable[str] | None = None,
+    allowed_callback_origins_env: str = "LAREX_ALLOWED_CALLBACK_ORIGINS",
+    allow_insecure_local_urls: bool = True,
 ) -> FastAPI:
     resolved_secret = dispatch_secret or os.getenv(dispatch_secret_env)
     if not resolved_secret:
@@ -42,6 +46,10 @@ def create_larex_action_app(
         dispatch_secret=resolved_secret,
         nonce_store=nonce_store,
         max_clock_skew_seconds=max_clock_skew_seconds,
+    )
+    resolved_allowed_origins = _resolve_allowed_origins(
+        allowed_callback_origins,
+        allowed_callback_origins_env,
     )
     fastapi_app = app or FastAPI(title=f"LAREX Action Processor: {processor_id}")
 
@@ -69,7 +77,15 @@ def create_larex_action_app(
         except DispatchVerificationError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-        background_tasks.add_task(_run_handler, payload, handler, client_factory)
+        background_tasks.add_task(
+            _run_handler,
+            payload,
+            handler,
+            client_factory,
+            enforce_url_security,
+            resolved_allowed_origins,
+            allow_insecure_local_urls,
+        )
         return {"status": "accepted", "runId": payload.run_id}
 
     return fastapi_app
@@ -79,8 +95,16 @@ async def _run_handler(
     payload: ActionDispatchPayload,
     handler: Handler,
     client_factory: ClientFactory | None,
+    enforce_url_security: bool,
+    allowed_callback_origins: set[str] | None,
+    allow_insecure_local_urls: bool,
 ) -> None:
-    client = client_factory(payload) if client_factory else ActionClient.from_dispatch(payload)
+    client = client_factory(payload) if client_factory else ActionClient.from_dispatch(
+        payload,
+        enforce_url_security=enforce_url_security,
+        allowed_callback_origins=allowed_callback_origins,
+        allow_insecure_local_urls=allow_insecure_local_urls,
+    )
     async with client:
         context = ActionContext(payload=payload, client=client)
         try:
@@ -93,3 +117,15 @@ async def _run_handler(
                 await context.fail("Processor failed", log=f"{exc.__class__.__name__}: {exc}")
             except Exception:
                 logger.exception("Could not report failed LAREX Action run %s", payload.run_id)
+
+
+def _resolve_allowed_origins(
+    explicit: Iterable[str] | None,
+    env_name: str,
+) -> set[str] | None:
+    if explicit is not None:
+        return {origin for origin in explicit if origin}
+    raw = os.getenv(env_name)
+    if not raw:
+        return None
+    return {origin.strip() for origin in raw.split(",") if origin.strip()}

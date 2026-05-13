@@ -12,3 +12,7 @@ class DispatchVerificationError(LarexActionError):
 
 class ActionCancelled(LarexActionError):
     """Raised when LAREX asks the processor to stop cooperatively."""
+
+
+class ActionUrlSecurityError(LarexActionError):
+    """Raised when a LAREX callback or download URL violates the SDK URL policy."""

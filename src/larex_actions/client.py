@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+import ipaddress
+from collections.abc import AsyncGenerator, Collection, Mapping
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 from pydantic import BaseModel
 
-from .exceptions import ActionCancelled
+from .exceptions import ActionCancelled, ActionUrlSecurityError
 from .models import (
     ActionDispatchPayload,
     ActionFile,
@@ -32,7 +34,20 @@ class ActionClient:
         secret: str,
         client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout = 120.0,
+        enforce_url_security: bool = True,
+        allowed_callback_origins: Collection[str] | None = None,
+        allow_insecure_local_urls: bool = True,
     ) -> None:
+        self._trusted_origin = _validate_callback_urls(
+            pull_url=pull_url,
+            heartbeat_url=heartbeat_url,
+            result_url=result_url,
+            enforce=enforce_url_security,
+            allowed_callback_origins=allowed_callback_origins,
+            allow_insecure_local_urls=allow_insecure_local_urls,
+        )
+        self._enforce_url_security = enforce_url_security
+        self._allow_insecure_local_urls = allow_insecure_local_urls
         self.pull_url = pull_url
         self.heartbeat_url = heartbeat_url
         self.result_url = result_url
@@ -47,6 +62,9 @@ class ActionClient:
         *,
         client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout = 120.0,
+        enforce_url_security: bool = True,
+        allowed_callback_origins: Collection[str] | None = None,
+        allow_insecure_local_urls: bool = True,
     ) -> ActionClient:
         return cls(
             pull_url=payload.pull_url,
@@ -55,6 +73,9 @@ class ActionClient:
             secret=payload.secret.get_secret_value(),
             client=client,
             timeout=timeout,
+            enforce_url_security=enforce_url_security,
+            allowed_callback_origins=allowed_callback_origins,
+            allow_insecure_local_urls=allow_insecure_local_urls,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -101,11 +122,13 @@ class ActionClient:
         return heartbeat
 
     async def download_bytes(self, file: ActionFile) -> bytes:
+        self._validate_download_url(file.download_url)
         response = await self._client.get(file.download_url, headers=self._auth_headers())
         response.raise_for_status()
         return response.content
 
     async def download_to_path(self, file: ActionFile, path: str | Path) -> Path:
+        self._validate_download_url(file.download_url)
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         async with self._client.stream(
@@ -169,6 +192,18 @@ class ActionClient:
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._secret}"}
+
+    def _validate_download_url(self, url: str) -> None:
+        if not self._enforce_url_security:
+            return
+        parsed = _parse_url(url, "downloadUrl")
+        _require_https_or_local(parsed, self._allow_insecure_local_urls, "downloadUrl")
+        origin = _origin(parsed)
+        if origin != self._trusted_origin:
+            raise ActionUrlSecurityError(
+                f"downloadUrl origin {origin} does not match trusted LAREX origin "
+                f"{self._trusted_origin}"
+            )
 
 
 class ActionContext:
@@ -283,3 +318,94 @@ class ActionContext:
 
     async def fail(self, message: str, *, log: str | None = None) -> HeartbeatResponse:
         return await self.client.fail(message, log=log)
+
+
+def _validate_callback_urls(
+    *,
+    pull_url: str,
+    heartbeat_url: str,
+    result_url: str,
+    enforce: bool,
+    allowed_callback_origins: Collection[str] | None,
+    allow_insecure_local_urls: bool,
+) -> str:
+    if not enforce:
+        return ""
+
+    parsed_urls = [
+        _parse_url(pull_url, "pullUrl"),
+        _parse_url(heartbeat_url, "heartbeatUrl"),
+        _parse_url(result_url, "resultUrl"),
+    ]
+    origins = {_origin(parsed) for parsed in parsed_urls}
+    if len(origins) != 1:
+        raise ActionUrlSecurityError("LAREX callback URLs must all use the same origin")
+    for parsed, field_name in zip(
+        parsed_urls,
+        ("pullUrl", "heartbeatUrl", "resultUrl"),
+        strict=True,
+    ):
+        _require_https_or_local(parsed, allow_insecure_local_urls, field_name)
+
+    trusted_origin = origins.pop()
+    if allowed_callback_origins is not None:
+        normalized_allowed = {_normalize_origin(origin) for origin in allowed_callback_origins}
+        if trusted_origin not in normalized_allowed:
+            raise ActionUrlSecurityError(
+                f"LAREX callback origin {trusted_origin} is not in allowed_callback_origins"
+            )
+    return trusted_origin
+
+
+def _parse_url(url: str, field_name: str) -> SplitResult:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ActionUrlSecurityError(f"{field_name} must use http or https")
+    if not parsed.hostname:
+        raise ActionUrlSecurityError(f"{field_name} must include a host")
+    if parsed.username or parsed.password:
+        raise ActionUrlSecurityError(f"{field_name} must not include credentials")
+    return parsed
+
+
+def _require_https_or_local(
+    parsed: SplitResult,
+    allow_insecure_local_urls: bool,
+    field_name: str,
+) -> None:
+    if parsed.scheme == "https":
+        return
+    if allow_insecure_local_urls and _is_local_or_private_host(parsed.hostname or ""):
+        return
+    raise ActionUrlSecurityError(f"{field_name} must use https")
+
+
+def _normalize_origin(origin: str) -> str:
+    parsed = _parse_url(origin, "allowed_callback_origins")
+    return _origin(parsed)
+
+
+def _origin(parsed: SplitResult) -> str:
+    return f"{parsed.scheme}://{(parsed.hostname or '').lower()}:{_effective_port(parsed)}"
+
+
+def _effective_port(parsed: SplitResult) -> int:
+    if parsed.port is not None:
+        return parsed.port
+    return 443 if parsed.scheme == "https" else 80
+
+
+def _is_local_or_private_host(host: str) -> bool:
+    normalized = host.lower()
+    if (
+        normalized == "localhost"
+        or normalized.endswith(".localhost")
+        or normalized.endswith(".local")
+        or "." not in normalized
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local

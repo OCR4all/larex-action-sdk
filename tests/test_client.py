@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 from pydantic import BaseModel
 
-from larex_actions import ActionCancelled, ActionClient, ActionContext, ResultBuilder
+from larex_actions import (
+    ActionCancelled,
+    ActionClient,
+    ActionContext,
+    ActionUrlSecurityError,
+    ResultBuilder,
+)
 
 from .conftest import dispatch_payload
 
@@ -112,6 +119,46 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     assert manifest.files[1].file_name == "page-copy.xml"
 
 
+def test_client_rejects_cross_origin_callback_urls() -> None:
+    with pytest.raises(ActionUrlSecurityError, match="same origin"):
+        ActionClient.from_dispatch(
+            dispatch_payload_model(
+                heartbeatUrl="https://evil.example/public/actions/runs/run-1/heartbeat"
+            )
+        )
+
+
+def test_client_rejects_insecure_external_callback_url() -> None:
+    with pytest.raises(ActionUrlSecurityError, match="https"):
+        ActionClient.from_dispatch(
+            dispatch_payload_model(
+                pullUrl="http://larex.example/public/actions/runs/run-1/input",
+                heartbeatUrl="http://larex.example/public/actions/runs/run-1/heartbeat",
+                resultUrl="http://larex.example/public/actions/runs/run-1/results",
+            )
+        )
+
+
+def test_client_allows_insecure_local_callback_url() -> None:
+    client = ActionClient.from_dispatch(
+        dispatch_payload_model(
+            pullUrl="http://app:8080/public/actions/runs/run-1/input",
+            heartbeatUrl="http://app:8080/public/actions/runs/run-1/heartbeat",
+            resultUrl="http://app:8080/public/actions/runs/run-1/results",
+        )
+    )
+
+    assert client.pull_url.startswith("http://app:8080/")
+
+
+def test_client_rejects_callback_origin_outside_allowlist() -> None:
+    with pytest.raises(ActionUrlSecurityError, match="not in allowed_callback_origins"):
+        ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            allowed_callback_origins={"https://other.example"},
+        )
+
+
 @pytest.mark.asyncio
 async def test_context_validates_typed_parameters() -> None:
     class Parameters(BaseModel):
@@ -145,7 +192,44 @@ async def test_context_step_emits_start_and_complete_logs() -> None:
     assert "step:complete Copy XML" in heartbeat_payloads[1]
 
 
-def dispatch_payload_model():
+@pytest.mark.asyncio
+async def test_client_rejects_cross_origin_download_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "protocolVersion": 1,
+                "runId": "run-1",
+                "processorKey": "mock-image-copy",
+                "projectId": "project-1",
+                "parameters": {},
+                "pages": [
+                    {
+                        "id": "page-1",
+                        "name": "001",
+                        "images": [
+                            {
+                                "id": "image-1",
+                                "fileName": "001.png",
+                                "mimeType": "image/png",
+                                "downloadUrl": "https://evil.example/file/image-1",
+                            }
+                        ],
+                        "xml": [],
+                    }
+                ],
+                "cancelRequested": False,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        action_input = await client.pull_input()
+        with pytest.raises(ActionUrlSecurityError, match="does not match trusted LAREX origin"):
+            await client.download_bytes(action_input.pages[0].images[0])
+
+
+def dispatch_payload_model(**overrides: Any):
     from larex_actions import ActionDispatchPayload
 
-    return ActionDispatchPayload.model_validate(dispatch_payload())
+    return ActionDispatchPayload.model_validate(dispatch_payload(**overrides))

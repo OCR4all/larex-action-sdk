@@ -1,5 +1,10 @@
 from .client import ActionClient, ActionContext
-from .exceptions import ActionCancelled, DispatchVerificationError, LarexActionError
+from .exceptions import (
+    ActionCancelled,
+    ActionUrlSecurityError,
+    DispatchVerificationError,
+    LarexActionError,
+)
 from .models import (
     PROTOCOL_VERSION,
     ActionDispatchPayload,
@@ -26,6 +31,7 @@ __all__ = [
     "ActionFile",
     "ActionInput",
     "ActionPage",
+    "ActionUrlSecurityError",
     "DispatchVerificationError",
     "DispatchVerifier",
     "FileType",
