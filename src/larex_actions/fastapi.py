@@ -99,11 +99,15 @@ async def _run_handler(
     allowed_callback_origins: set[str] | None,
     allow_insecure_local_urls: bool,
 ) -> None:
-    client = client_factory(payload) if client_factory else ActionClient.from_dispatch(
-        payload,
-        enforce_url_security=enforce_url_security,
-        allowed_callback_origins=allowed_callback_origins,
-        allow_insecure_local_urls=allow_insecure_local_urls,
+    client = (
+        client_factory(payload)
+        if client_factory
+        else ActionClient.from_dispatch(
+            payload,
+            enforce_url_security=enforce_url_security,
+            allowed_callback_origins=allowed_callback_origins,
+            allow_insecure_local_urls=allow_insecure_local_urls,
+        )
     )
     async with client:
         context = ActionContext(payload=payload, client=client)
