@@ -36,7 +36,10 @@ def create_larex_action_app(
     allowed_callback_origins: Iterable[str] | None = None,
     allowed_callback_origins_env: str = "LAREX_ALLOWED_CALLBACK_ORIGINS",
     allow_insecure_local_urls: bool = True,
+    max_dispatch_body_bytes: int = 1_048_576,
 ) -> FastAPI:
+    if max_dispatch_body_bytes <= 0:
+        raise ValueError("max_dispatch_body_bytes must be positive")
     resolved_secret = dispatch_secret or os.getenv(dispatch_secret_env)
     if not resolved_secret:
         raise ValueError(f"Dispatch secret is not configured: {dispatch_secret_env}")
@@ -59,7 +62,7 @@ def create_larex_action_app(
 
     @fastapi_app.post("/dispatch")
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
-        body = await request.body()
+        body = await _read_limited_body(request, max_dispatch_body_bytes)
         raw_path = request.scope.get("raw_path")
         if isinstance(raw_path, bytes):
             path_and_query = raw_path.decode("ascii", errors="surrogateescape")
@@ -89,6 +92,25 @@ def create_larex_action_app(
         return {"status": "accepted", "runId": payload.run_id}
 
     return fastapi_app
+
+
+async def _read_limited_body(request: Request, max_bytes: int) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="Dispatch body is too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from None
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="Dispatch body is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def _run_handler(

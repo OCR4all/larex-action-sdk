@@ -112,3 +112,14 @@ def test_rejected_dispatch_does_not_burn_nonce() -> None:
     payload = verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
 
     assert payload.run_id == "run-1"
+
+
+def test_nonce_store_fails_closed_when_full() -> None:
+    nonce_store = NonceStore(max_size=1)
+    nonce_store.check_and_store("nonce-1")
+
+    with pytest.raises(DispatchVerificationError, match="nonce store is full"):
+        nonce_store.check_and_store("nonce-2")
+
+    with pytest.raises(DispatchVerificationError, match="already used"):
+        nonce_store.check_and_store("nonce-1")

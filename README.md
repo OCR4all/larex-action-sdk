@@ -78,6 +78,7 @@ queue/worker system and use `ActionClient.from_dispatch(payload)` in async worke
 
 - Dispatch requests are verified with the `X-LAREX-Action-*` HMAC headers.
 - Timestamps and nonces are checked to reduce replay risk.
+- The FastAPI adapter rejects dispatch bodies larger than `max_dispatch_body_bytes`.
 - Per-run bearer secrets and dispatch HMAC secrets are never included in model reprs.
 - Processor YAML must still declare the inputs and outputs LAREX should expose or accept.
 

@@ -59,6 +59,28 @@ async def test_fastapi_adapter_rejects_invalid_dispatch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fastapi_adapter_rejects_large_dispatch_body() -> None:
+    async def process(ctx: ActionContext) -> None:
+        raise AssertionError("should not run")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        max_dispatch_body_bytes=8,
+    )
+    body, headers = signed_dispatch()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/dispatch", content=body, headers=headers)
+
+    assert response.status_code == 413
+
+
+@pytest.mark.asyncio
 async def test_fastapi_adapter_reports_handler_exception() -> None:
     heartbeat_payloads: list[dict[str, object]] = []
 
