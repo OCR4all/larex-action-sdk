@@ -67,9 +67,9 @@ input_target = action_input.target
 ```
 
 Processors still receive full page files according to the Action YAML inputs.
-Target metadata contains selected region/textline ids, geometry, and current text.
-LAREX sends full page images/XML and lets processors decide how to use the target,
-including whether to crop, mask, pad, deskew, or process the full image.
+Target metadata contains selected region/textline ids only. LAREX sends full page
+images/XML and lets processors resolve geometry from PAGE XML, including whether
+to crop, mask, pad, deskew, or process the full image.
 
 Processors return normal PAGE XML via `ResultBuilder.add_xml_bytes(...)` or
 `add_xml_path(...)`. For region or textline targeted runs, LAREX imports only the

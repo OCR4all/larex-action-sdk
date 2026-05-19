@@ -134,14 +134,8 @@ def test_action_input_parses_target_metadata() -> None:
                 "pages": [
                     {
                         "pageId": "page-1",
-                        "regions": [],
-                        "textLines": [
-                            {
-                                "id": "line-1",
-                                "parentRegionId": "region-1",
-                                "textContentVariants": [{"index": 0, "text": "old"}],
-                            }
-                        ],
+                        "regionIds": ["region-1"],
+                        "textLineIds": ["line-1"],
                     }
                 ],
             },
@@ -153,7 +147,8 @@ def test_action_input_parses_target_metadata() -> None:
     assert target is not None
     assert action_input.target is target
     assert target.type == "TEXT_LINE"
-    assert target.pages[0].text_lines[0].parent_region_id == "region-1"
+    assert target.pages[0].region_ids == ["region-1"]
+    assert target.pages[0].text_line_ids == ["line-1"]
 
 
 def test_client_rejects_cross_origin_callback_urls() -> None:

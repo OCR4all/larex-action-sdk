@@ -54,27 +54,10 @@ class ActionFile(LarexModel):
     download_url: str = Field(alias="downloadUrl")
 
 
-class ActionTargetRegion(LarexModel):
-    id: str
-    kind: str | None = None
-    coords: dict[str, Any] | None = None
-    text_line_ids: list[str] = Field(default_factory=list, alias="textLineIds")
-
-
-class ActionTargetTextLine(LarexModel):
-    id: str
-    parent_region_id: str | None = Field(default=None, alias="parentRegionId")
-    coords: dict[str, Any] | None = None
-    baseline: dict[str, Any] | None = None
-    text_content_variants: list[dict[str, Any]] = Field(
-        default_factory=list, alias="textContentVariants"
-    )
-
-
 class ActionInputTargetPage(LarexModel):
     page_id: str = Field(alias="pageId")
-    regions: list[ActionTargetRegion] = Field(default_factory=list)
-    text_lines: list[ActionTargetTextLine] = Field(default_factory=list, alias="textLines")
+    region_ids: list[str] = Field(default_factory=list, alias="regionIds")
+    text_line_ids: list[str] = Field(default_factory=list, alias="textLineIds")
 
 
 class ActionInputTargetSelection(LarexModel):
