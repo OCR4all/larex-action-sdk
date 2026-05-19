@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "larex-action-sdk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Framework-neutral Python SDK for building LAREX Action processors."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
   "httpx>=0.28,<1",
+  "pillow>=10,<13",
   "pydantic>=2.10,<3",
   "pytest-asyncio>=0.26.0",
 ]

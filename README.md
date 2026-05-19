@@ -27,7 +27,7 @@ uv add larex-action-sdk
 ```python
 import os
 
-from larex_actions import ActionContext
+from larex_actions import ActionContext, crop_image_bytes
 from larex_actions.fastapi import create_larex_action_app
 
 
@@ -35,19 +35,17 @@ async def process(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
     results = ctx.result_builder()
 
-    if action_input.target_selection and action_input.target_selection.type == "TEXT_LINE":
-        for target_page in action_input.target_selection.pages:
-            for line in target_page.text_lines:
-                results.add_text_line_text(
-                    page_id=target_page.page_id,
-                    text_line_id=line.id,
-                    text="recognized text",
-                )
-        await ctx.complete(results, "Updated selected text lines")
-        return
-
     for page in action_input.pages:
         async with ctx.step(f"Processing {page.name}", progress_percent=25):
+            if page.images and action_input.target_selection:
+                image_bytes = await ctx.download_bytes(page.images[0])
+                for target_page in action_input.target_selection.pages:
+                    if target_page.page_id != page.id:
+                        continue
+                    for region in target_page.regions:
+                        crop = crop_image_bytes(image_bytes, region.coords, padding=16)
+                        # Run a model on the crop, then merge results into PAGE XML.
+
             if page.xml:
                 xml_bytes = await ctx.download_bytes(page.xml[0])
                 results.add_xml_bytes(
@@ -78,12 +76,14 @@ input_target = action_input.target
 ```
 
 Processors still receive full page files according to the Action YAML inputs.
-Target metadata contains selected region/textline ids, geometry, and current text;
-LAREX does not generate crops.
+Target metadata contains selected region/textline ids, geometry, and current text.
+LAREX sends full page images/XML and lets processors decide how to use the target.
+The SDK includes `crop_image_bytes(...)` and `bounding_box(...)` helpers for
+building region/textline crops from target geometry.
 
-Use `ResultBuilder.add_text_line_text(...)` for OCR/HTR text patches and
-`ResultBuilder.add_layout_xml_bytes(...)` or `add_layout_xml_path(...)` for layout
-PAGE XML patches.
+Processors return normal PAGE XML via `ResultBuilder.add_xml_bytes(...)` or
+`add_xml_path(...)`. For region or textline targeted runs, LAREX imports only the
+selected target scope from the returned PAGE XML.
 
 ## Framework-Neutral Dispatch Verification
 

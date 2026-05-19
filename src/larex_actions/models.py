@@ -8,7 +8,6 @@ RunStatus = Literal["running", "failed"]
 ResultStatus = Literal["completed", "failed"]
 FileType = Literal["image", "xml"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
-PatchType = Literal["TEXT_LINE_TEXT", "LAYOUT_XML"]
 PROTOCOL_VERSION = 1
 
 
@@ -119,21 +118,8 @@ class ResultFile(LarexModel):
     file_name: str = Field(alias="fileName")
 
 
-class ResultPatch(LarexModel):
-    type: PatchType
-    page_id: str = Field(alias="pageId")
-    region_id: str | None = Field(default=None, alias="regionId")
-    text_line_id: str | None = Field(default=None, alias="textLineId")
-    text: str | None = None
-    confidence: float | None = None
-    index: int | None = None
-    field_name: str | None = Field(default=None, alias="fieldName")
-    file_name: str | None = Field(default=None, alias="fileName")
-
-
 class ResultManifest(LarexModel):
     protocol_version: Literal[1] = Field(default=PROTOCOL_VERSION, alias="protocolVersion")
     status: ResultStatus = "completed"
     message: str | None = None
     files: list[ResultFile] = Field(default_factory=list)
-    patches: list[ResultPatch] = Field(default_factory=list)

@@ -5,6 +5,7 @@ from .exceptions import (
     DispatchVerificationError,
     LarexActionError,
 )
+from .images import bounding_box, crop_image_bytes, extract_points
 from .models import (
     PROTOCOL_VERSION,
     ActionDispatchPayload,
@@ -21,7 +22,6 @@ from .models import (
     HeartbeatResponse,
     ResultFile,
     ResultManifest,
-    ResultPatch,
     ResultStatus,
     RunStatus,
     TargetSelectionPage,
@@ -55,8 +55,10 @@ __all__ = [
     "ResultBuilder",
     "ResultFile",
     "ResultManifest",
-    "ResultPatch",
     "ResultStatus",
     "RunStatus",
     "TargetSelectionPage",
+    "bounding_box",
+    "crop_image_bytes",
+    "extract_points",
 ]
