@@ -27,7 +27,7 @@ uv add larex-action-sdk
 ```python
 import os
 
-from larex_actions import ActionContext, crop_image_bytes
+from larex_actions import ActionContext
 from larex_actions.fastapi import create_larex_action_app
 
 
@@ -37,15 +37,6 @@ async def process(ctx: ActionContext) -> None:
 
     for page in action_input.pages:
         async with ctx.step(f"Processing {page.name}", progress_percent=25):
-            if page.images and action_input.target_selection:
-                image_bytes = await ctx.download_bytes(page.images[0])
-                for target_page in action_input.target_selection.pages:
-                    if target_page.page_id != page.id:
-                        continue
-                    for region in target_page.regions:
-                        crop = crop_image_bytes(image_bytes, region.coords, padding=16)
-                        # Run a model on the crop, then merge results into PAGE XML.
-
             if page.xml:
                 xml_bytes = await ctx.download_bytes(page.xml[0])
                 results.add_xml_bytes(
@@ -77,9 +68,8 @@ input_target = action_input.target
 
 Processors still receive full page files according to the Action YAML inputs.
 Target metadata contains selected region/textline ids, geometry, and current text.
-LAREX sends full page images/XML and lets processors decide how to use the target.
-The SDK includes `crop_image_bytes(...)` and `bounding_box(...)` helpers for
-building region/textline crops from target geometry.
+LAREX sends full page images/XML and lets processors decide how to use the target,
+including whether to crop, mask, pad, deskew, or process the full image.
 
 Processors return normal PAGE XML via `ResultBuilder.add_xml_bytes(...)` or
 `add_xml_path(...)`. For region or textline targeted runs, LAREX imports only the

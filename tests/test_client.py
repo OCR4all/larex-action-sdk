@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from PIL import Image
 from pydantic import BaseModel
 
 from larex_actions import (
@@ -16,8 +14,6 @@ from larex_actions import (
     ActionInput,
     ActionUrlSecurityError,
     ResultBuilder,
-    bounding_box,
-    crop_image_bytes,
 )
 
 from .conftest import dispatch_payload
@@ -122,19 +118,6 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     assert manifest.protocol_version == 1
     assert [file.type for file in manifest.files] == ["image", "xml"]
     assert manifest.files[1].file_name == "page-copy.xml"
-
-
-def test_image_crop_helpers_use_target_geometry() -> None:
-    image = Image.new("RGB", (100, 80), "white")
-    source = BytesIO()
-    image.save(source, format="PNG")
-
-    coords = {"points": [{"x": 10, "y": 15}, {"x": 40, "y": 15}, {"x": 40, "y": 45}]}
-    cropped = crop_image_bytes(source.getvalue(), coords, padding=5)
-
-    assert bounding_box(coords, padding=5, image_size=(100, 80)) == (5, 10, 45, 50)
-    with Image.open(BytesIO(cropped)) as cropped_image:
-        assert cropped_image.size == (40, 40)
 
 
 def test_action_input_parses_target_metadata() -> None:

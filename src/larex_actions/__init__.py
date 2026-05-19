@@ -5,7 +5,6 @@ from .exceptions import (
     DispatchVerificationError,
     LarexActionError,
 )
-from .images import bounding_box, crop_image_bytes, extract_points
 from .models import (
     PROTOCOL_VERSION,
     ActionDispatchPayload,
@@ -58,7 +57,4 @@ __all__ = [
     "ResultStatus",
     "RunStatus",
     "TargetSelectionPage",
-    "bounding_box",
-    "crop_image_bytes",
-    "extract_points",
 ]
