@@ -129,7 +129,6 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
-    { name = "pytest-asyncio" },
 ]
 
 [package.optional-dependencies]
@@ -151,7 +150,6 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pydantic", specifier = ">=2.10,<3" },
-    { name = "pytest-asyncio", specifier = ">=0.26.0" },
 ]
 provides-extras = ["fastapi"]
 
