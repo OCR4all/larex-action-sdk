@@ -54,15 +54,8 @@ class ActionFile(LarexModel):
     download_url: str = Field(alias="downloadUrl")
 
 
-class ActionInputTargetPage(LarexModel):
-    page_id: str = Field(alias="pageId")
-    region_ids: list[str] = Field(default_factory=list, alias="regionIds")
-    text_line_ids: list[str] = Field(default_factory=list, alias="textLineIds")
-
-
-class ActionInputTargetSelection(LarexModel):
-    type: ActionTarget = "PAGE"
-    pages: list[ActionInputTargetPage] = Field(default_factory=list)
+ActionInputTargetPage = TargetSelectionPage
+ActionInputTargetSelection = ActionTargetSelection
 
 
 class ActionPage(LarexModel):
