@@ -251,6 +251,41 @@ async def test_context_check_cancelled_acknowledges_cancellation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_cancelled_short_circuits_after_known_cancellation() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/input"):
+            return httpx.Response(
+                200,
+                json={
+                    "protocolVersion": 1,
+                    "runId": "run-1",
+                    "processorKey": "mock-image-copy",
+                    "projectId": "project-1",
+                    "parameters": {},
+                    "pages": [],
+                    "cancelRequested": True,
+                },
+            )
+        if request.url.path.endswith("/heartbeat"):
+            heartbeat_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json={"cancelRequested": True})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        await context.pull_input()
+        with pytest.raises(ActionCancelled):
+            await context.check_cancelled()
+
+    assert [payload["status"] for payload in heartbeat_payloads] == ["cancelled"]
+
+
+@pytest.mark.asyncio
 async def test_context_step_does_not_report_failure_on_cancellation() -> None:
     heartbeat_payloads: list[dict[str, object]] = []
 

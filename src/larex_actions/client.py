@@ -118,6 +118,9 @@ class ActionClient:
         error_message: str | None = None,
         raise_on_cancel: bool = False,
     ) -> HeartbeatResponse:
+        if status == "running" and raise_on_cancel:
+            await self._raise_if_cancel_requested(status_message=status_message, log=log)
+
         heartbeat = await self._post_heartbeat(
             progress_percent=progress_percent,
             status_message=status_message,
@@ -131,9 +134,8 @@ class ActionClient:
             return heartbeat
 
         self._cancel_requested = self._cancel_requested or heartbeat.cancel_requested
-        if raise_on_cancel and self._cancel_requested:
-            await self.cancelled(status_message=status_message, log=log)
-            raise ActionCancelled("LAREX requested cancellation")
+        if raise_on_cancel:
+            await self._raise_if_cancel_requested(status_message=status_message, log=log)
         return heartbeat
 
     async def cancelled(
@@ -235,9 +237,17 @@ class ActionClient:
         )
 
     async def _ensure_results_allowed(self) -> None:
+        await self._raise_if_cancel_requested()
+
+    async def _raise_if_cancel_requested(
+        self,
+        *,
+        status_message: str | None = None,
+        log: str | None = None,
+    ) -> None:
         if not self._cancel_requested:
             return
-        await self.cancelled()
+        await self.cancelled(status_message=status_message, log=log)
         raise ActionCancelled("LAREX requested cancellation")
 
     async def _post_results(
@@ -412,19 +422,16 @@ class ActionContext:
 
         try:
             while True:
-                wait_timeout = cancel_poll_seconds
-                if deadline is not None:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        raise TimeoutError(
-                            f"Subprocess timed out after {timeout} seconds: {normalized_command[0]}"
-                        )
-                    wait_timeout = min(wait_timeout, remaining)
-
                 try:
-                    stdout, stderr = await asyncio.wait_for(
-                        asyncio.shield(communicate_task),
-                        timeout=wait_timeout,
+                    stdout, stderr = await _wait_for_subprocess_output(
+                        communicate_task,
+                        timeout=_subprocess_wait_timeout(
+                            loop=loop,
+                            deadline=deadline,
+                            cancel_poll_seconds=cancel_poll_seconds,
+                            timeout=timeout,
+                            command_name=normalized_command[0],
+                        ),
                     )
                     return ActionSubprocessResult(
                         args=normalized_command,
@@ -586,3 +593,28 @@ async def _terminate_subprocess(
             await process.wait()
         except ProcessLookupError:
             return
+
+
+def _subprocess_wait_timeout(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    deadline: float | None,
+    cancel_poll_seconds: float,
+    timeout: float | None,
+    command_name: str,
+) -> float:
+    if deadline is None:
+        return cancel_poll_seconds
+
+    remaining = deadline - loop.time()
+    if remaining <= 0:
+        raise TimeoutError(f"Subprocess timed out after {timeout} seconds: {command_name}")
+    return min(cancel_poll_seconds, remaining)
+
+
+async def _wait_for_subprocess_output(
+    communicate_task: asyncio.Task[tuple[bytes | None, bytes | None]],
+    *,
+    timeout: float,
+) -> tuple[bytes | None, bytes | None]:
+    return await asyncio.wait_for(asyncio.shield(communicate_task), timeout=timeout)
