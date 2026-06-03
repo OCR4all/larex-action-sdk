@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -96,13 +98,18 @@ async def test_client_pull_heartbeat_download_and_complete(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_heartbeat_raise_on_cancel() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        heartbeat_payloads.append(json.loads(request.content))
         return httpx.Response(200, json={"cancelRequested": True})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
         with pytest.raises(ActionCancelled):
             await client.heartbeat(raise_on_cancel=True)
+
+    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "cancelled"]
 
 
 def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
@@ -222,6 +229,118 @@ async def test_context_step_emits_start_and_complete_logs() -> None:
     assert len(heartbeat_payloads) == 2
     assert "step:start Copy XML" in heartbeat_payloads[0]
     assert "step:complete Copy XML" in heartbeat_payloads[1]
+
+
+@pytest.mark.asyncio
+async def test_context_check_cancelled_acknowledges_cancellation() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        heartbeat_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"cancelRequested": True})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(ActionCancelled):
+            await context.check_cancelled()
+
+    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_context_step_does_not_report_failure_on_cancellation() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        heartbeat_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"cancelRequested": len(heartbeat_payloads) >= 2})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(ActionCancelled):
+            async with context.step("Copy XML", progress_percent=30):
+                await context.check_cancelled()
+
+    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "running", "cancelled"]
+    assert [payload.get("log") for payload in heartbeat_payloads] == [
+        "step:start Copy XML",
+        None,
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_result_upload_after_cancellation_request() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/heartbeat"):
+            heartbeat_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json={"cancelRequested": True})
+        if request.url.path.endswith("/results"):
+            raise AssertionError("results upload must not be attempted after cancellation")
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "copy.xml")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        await client.heartbeat()
+        with pytest.raises(ActionCancelled):
+            await client.complete(results, "Done")
+
+    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_context_run_subprocess_terminates_on_cancellation(tmp_path: Path) -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+    sentinel_path = tmp_path / "sentinel.txt"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        heartbeat_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"cancelRequested": len(heartbeat_payloads) >= 2})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(ActionCancelled):
+            await context.run_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib, signal, sys, time\n"
+                        "sentinel = pathlib.Path(sys.argv[1])\n"
+                        "sentinel.write_text('started', encoding='utf-8')\n"
+                        "def handle(*_args):\n"
+                        "    sentinel.write_text('terminated', encoding='utf-8')\n"
+                        "    raise SystemExit(0)\n"
+                        "signal.signal(signal.SIGTERM, handle)\n"
+                        "while True:\n"
+                        "    time.sleep(1)\n"
+                    ),
+                    str(sentinel_path),
+                ],
+                terminate_grace_seconds=1.0,
+                cancel_poll_seconds=0.05,
+            )
+
+    assert sentinel_path.read_text(encoding="utf-8") == "terminated"
+    assert [payload["status"] for payload in heartbeat_payloads] == [
+        "running",
+        "running",
+        "cancelled",
+    ]
 
 
 @pytest.mark.asyncio

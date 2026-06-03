@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
-from collections.abc import AsyncGenerator, Collection, Mapping
-from contextlib import ExitStack, asynccontextmanager
+import os
+from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
+from contextlib import ExitStack, asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import SplitResult, urlsplit
@@ -22,6 +25,14 @@ from .models import (
 from .results import ResultBuilder
 
 ParameterModelT = TypeVar("ParameterModelT", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class ActionSubprocessResult:
+    args: tuple[str, ...]
+    returncode: int
+    stdout: bytes | None
+    stderr: bytes | None
 
 
 class ActionClient:
@@ -54,6 +65,8 @@ class ActionClient:
         self._secret = secret
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
+        self._cancel_requested = False
+        self._cancelled_reported = False
 
     @classmethod
     def from_dispatch(
@@ -91,7 +104,9 @@ class ActionClient:
     async def pull_input(self) -> ActionInput:
         response = await self._client.get(self.pull_url, headers=self._auth_headers())
         response.raise_for_status()
-        return ActionInput.model_validate(response.json())
+        action_input = ActionInput.model_validate(response.json())
+        self._cancel_requested = self._cancel_requested or action_input.cancel_requested
+        return action_input
 
     async def heartbeat(
         self,
@@ -102,6 +117,51 @@ class ActionClient:
         status: RunStatus = "running",
         error_message: str | None = None,
         raise_on_cancel: bool = False,
+    ) -> HeartbeatResponse:
+        heartbeat = await self._post_heartbeat(
+            progress_percent=progress_percent,
+            status_message=status_message,
+            log=log,
+            status=status,
+            error_message=error_message,
+        )
+        if status == "cancelled":
+            self._cancel_requested = True
+            self._cancelled_reported = True
+            return heartbeat
+
+        self._cancel_requested = self._cancel_requested or heartbeat.cancel_requested
+        if raise_on_cancel and self._cancel_requested:
+            await self.cancelled(status_message=status_message, log=log)
+            raise ActionCancelled("LAREX requested cancellation")
+        return heartbeat
+
+    async def cancelled(
+        self,
+        *,
+        status_message: str | None = None,
+        log: str | None = None,
+    ) -> HeartbeatResponse:
+        if self._cancelled_reported:
+            return HeartbeatResponse.model_validate({"cancelRequested": True})
+
+        heartbeat = await self._post_heartbeat(
+            status="cancelled",
+            status_message=status_message,
+            log=log,
+        )
+        self._cancel_requested = True
+        self._cancelled_reported = True
+        return heartbeat
+
+    async def _post_heartbeat(
+        self,
+        *,
+        progress_percent: int | None = None,
+        status_message: str | None = None,
+        log: str | None = None,
+        status: RunStatus = "running",
+        error_message: str | None = None,
     ) -> HeartbeatResponse:
         payload: dict[str, Any] = {
             "status": status,
@@ -116,10 +176,7 @@ class ActionClient:
             json={key: value for key, value in payload.items() if value is not None},
         )
         response.raise_for_status()
-        heartbeat = HeartbeatResponse.model_validate(response.json())
-        if raise_on_cancel and heartbeat.cancel_requested:
-            raise ActionCancelled("LAREX requested cancellation")
-        return heartbeat
+        return HeartbeatResponse.model_validate(response.json())
 
     async def download_bytes(self, file: ActionFile) -> bytes:
         self._validate_download_url(file.download_url)
@@ -147,6 +204,7 @@ class ActionClient:
         results: ResultBuilder,
         message: str | None = None,
     ) -> Mapping[str, Any]:
+        await self._ensure_results_allowed()
         return await self._post_results(results, status="completed", message=message)
 
     async def upload_results(
@@ -156,6 +214,7 @@ class ActionClient:
         status: ResultStatus = "completed",
         message: str | None = None,
     ) -> Mapping[str, Any]:
+        await self._ensure_results_allowed()
         return await self._post_results(results, status=status, message=message)
 
     async def fail(
@@ -165,6 +224,8 @@ class ActionClient:
         log: str | None = None,
         progress_percent: int | None = None,
     ) -> HeartbeatResponse:
+        if self._cancel_requested:
+            return await self.cancelled(status_message=message, log=log)
         return await self.heartbeat(
             progress_percent=progress_percent,
             status_message=message,
@@ -172,6 +233,12 @@ class ActionClient:
             status="failed",
             error_message=message,
         )
+
+    async def _ensure_results_allowed(self) -> None:
+        if not self._cancel_requested:
+            return
+        await self.cancelled()
+        raise ActionCancelled("LAREX requested cancellation")
 
     async def _post_results(
         self,
@@ -274,6 +341,8 @@ class ActionContext:
         )
         try:
             yield
+        except ActionCancelled:
+            raise
         except Exception:
             await self.heartbeat(
                 progress_percent=progress_percent,
@@ -289,13 +358,90 @@ class ActionContext:
         )
 
     async def raise_if_cancelled(self) -> None:
+        await self.check_cancelled()
+
+    async def check_cancelled(self) -> None:
         await self.heartbeat(raise_on_cancel=True)
+
+    async def cancelled(
+        self,
+        message: str | None = None,
+        *,
+        log: str | None = None,
+    ) -> HeartbeatResponse:
+        return await self.client.cancelled(status_message=message, log=log)
 
     async def download_bytes(self, file: ActionFile) -> bytes:
         return await self.client.download_bytes(file)
 
     async def download_to_path(self, file: ActionFile, path: str | Path) -> Path:
         return await self.client.download_to_path(file, path)
+
+    async def run_subprocess(
+        self,
+        command: Sequence[str | os.PathLike[str]],
+        *,
+        cwd: str | os.PathLike[str] | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        terminate_grace_seconds: float = 5.0,
+        capture_output: bool = False,
+        input: bytes | None = None,
+        cancel_poll_seconds: float = 5.0,
+    ) -> ActionSubprocessResult:
+        if not command:
+            raise ValueError("command must not be empty")
+        if terminate_grace_seconds < 0:
+            raise ValueError("terminate_grace_seconds must not be negative")
+        if cancel_poll_seconds <= 0:
+            raise ValueError("cancel_poll_seconds must be positive")
+
+        normalized_command = tuple(os.fspath(part) for part in command)
+        await self.check_cancelled()
+        process = await asyncio.create_subprocess_exec(
+            *normalized_command,
+            cwd=os.fspath(cwd) if cwd is not None else None,
+            env=dict(env) if env is not None else None,
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
+            stdout=asyncio.subprocess.PIPE if capture_output else None,
+            stderr=asyncio.subprocess.PIPE if capture_output else None,
+        )
+        communicate_task = asyncio.create_task(process.communicate(input))
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+
+        try:
+            while True:
+                wait_timeout = cancel_poll_seconds
+                if deadline is not None:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"Subprocess timed out after {timeout} seconds: {normalized_command[0]}"
+                        )
+                    wait_timeout = min(wait_timeout, remaining)
+
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        asyncio.shield(communicate_task),
+                        timeout=wait_timeout,
+                    )
+                    return ActionSubprocessResult(
+                        args=normalized_command,
+                        returncode=process.returncode or 0,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
+                except TimeoutError:
+                    await self.check_cancelled()
+        except BaseException:
+            await _terminate_subprocess(process, terminate_grace_seconds)
+            raise
+        finally:
+            if not communicate_task.done():
+                communicate_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await communicate_task
 
     def result_builder(self) -> ResultBuilder:
         return ResultBuilder()
@@ -409,3 +555,34 @@ def _is_local_or_private_host(host: str) -> bool:
     except ValueError:
         return False
     return address.is_loopback or address.is_private or address.is_link_local
+
+
+async def _terminate_subprocess(
+    process: asyncio.subprocess.Process,
+    terminate_grace_seconds: float,
+) -> None:
+    if process.returncode is not None:
+        return
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=terminate_grace_seconds)
+        return
+    except TimeoutError:
+        pass
+    except ProcessLookupError:
+        return
+
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await process.wait()
+        except ProcessLookupError:
+            return

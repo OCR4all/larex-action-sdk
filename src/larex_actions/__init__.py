@@ -1,4 +1,4 @@
-from .client import ActionClient, ActionContext
+from .client import ActionClient, ActionContext, ActionSubprocessResult
 from .exceptions import (
     ActionCancelled,
     ActionUrlSecurityError,
@@ -38,6 +38,7 @@ __all__ = [
     "ActionInputTargetPage",
     "ActionInputTargetSelection",
     "ActionPage",
+    "ActionSubprocessResult",
     "ActionTarget",
     "ActionTargetSelection",
     "ActionUrlSecurityError",

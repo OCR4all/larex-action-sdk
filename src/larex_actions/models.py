@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-RunStatus = Literal["running", "failed"]
+RunStatus = Literal["running", "failed", "cancelled"]
 ResultStatus = Literal["completed", "failed"]
 FileType = Literal["image", "xml"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]

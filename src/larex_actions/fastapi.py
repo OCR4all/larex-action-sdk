@@ -137,6 +137,12 @@ async def _run_handler(
             await handler(context)
         except ActionCancelled:
             logger.info("LAREX Action run %s cancelled", payload.run_id)
+            try:
+                await context.cancelled()
+            except Exception:
+                logger.exception(
+                    "Could not acknowledge cancelled LAREX Action run %s", payload.run_id
+                )
         except Exception as exc:
             logger.exception("LAREX Action run %s failed", payload.run_id)
             try:

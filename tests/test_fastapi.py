@@ -111,3 +111,36 @@ async def test_fastapi_adapter_reports_handler_exception() -> None:
     await async_client.aclose()
     assert response.status_code == 200
     assert heartbeat_payloads
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_acknowledges_cooperative_cancellation() -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    async def process(ctx: ActionContext) -> None:
+        await ctx.check_cancelled()
+
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/heartbeat"):
+            heartbeat_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json={"cancelRequested": True})
+        return httpx.Response(404)
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        client_factory=lambda payload: ActionClient.from_dispatch(payload, client=async_client),
+    )
+    body, headers = signed_dispatch()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/dispatch", content=body, headers=headers)
+
+    await async_client.aclose()
+    assert response.status_code == 200
+    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "cancelled"]

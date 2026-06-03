@@ -4,11 +4,13 @@
 > Actions and the SDK are considered stable.
 
 Framework-neutral Python SDK for building [LAREX](https://github.com/OCR4all/larex)
-Action processors.
+Action processors with signed dispatch verification, typed payloads, and cooperative
+run cancellation.
 
 The core package verifies LAREX dispatch requests, parses typed run/input payloads,
-sends heartbeats, downloads selected files, and uploads result manifests. FastAPI
-support is available as an optional convenience extra.
+sends heartbeats, downloads selected files, uploads result manifests, and helps
+processors acknowledge cancellation cleanly. FastAPI support is available as an
+optional convenience extra.
 
 ## Installation
 
@@ -37,6 +39,7 @@ async def process(ctx: ActionContext) -> None:
 
     for page in action_input.pages:
         async with ctx.step(f"Processing {page.name}", progress_percent=25):
+            await ctx.check_cancelled()
             if page.xml:
                 xml_bytes = await ctx.download_bytes(page.xml[0])
                 results.add_xml_bytes(
@@ -93,6 +96,22 @@ payload = DispatchVerifier(
 
 You can then pass `payload.model_dump(mode="json", by_alias=True)` to your own
 queue/worker system and use `ActionClient.from_dispatch(payload)` in async workers.
+
+## Cooperative Cancellation
+
+LAREX cancellation is cooperative. The processor keeps polling the heartbeat
+endpoint and LAREX responds with `cancelRequested: true` when the run should stop.
+
+- Use `await ctx.check_cancelled()` at safe interruption points.
+- `ctx.check_cancelled()` performs a heartbeat request, so avoid calling it in a
+  hot inner loop without pacing.
+- `await ctx.heartbeat(..., raise_on_cancel=True)` also raises `ActionCancelled`
+  when a cancellation is pending.
+- `await ctx.run_subprocess(...)` polls for cancellation while a child process is
+  running, sends a final `status="cancelled"` heartbeat, and terminates the child
+  process gracefully before escalating to `kill`.
+- Once cancellation has been requested, the SDK refuses result uploads and
+  acknowledges cancellation instead.
 
 ## Security
 
