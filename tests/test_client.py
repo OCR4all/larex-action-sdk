@@ -302,7 +302,11 @@ async def test_context_step_does_not_report_failure_on_cancellation() -> None:
             async with context.step("Copy XML", progress_percent=30):
                 await context.check_cancelled()
 
-    assert [payload["status"] for payload in heartbeat_payloads] == ["running", "running", "cancelled"]
+    assert [payload["status"] for payload in heartbeat_payloads] == [
+        "running",
+        "running",
+        "cancelled",
+    ]
     assert [payload.get("log") for payload in heartbeat_payloads] == [
         "step:start Copy XML",
         None,
