@@ -58,6 +58,19 @@ app = create_larex_action_app(
 )
 ```
 
+The FastAPI adapter always exposes `/dispatch` and `/health`. Set
+`LAREX_ACTION_ROUTE_PREFIXES` to also expose prefixed routes when a reverse
+proxy keeps an external path prefix:
+
+```bash
+LAREX_ACTION_ROUTE_PREFIXES=/kraken,/ocr
+```
+
+With that setting, the same processor also accepts `/kraken/dispatch`,
+`/kraken/health`, `/ocr/dispatch`, and `/ocr/health`. LAREX must sign and call
+the same path the processor receives; do not strip the prefix in the reverse
+proxy before the request reaches the processor.
+
 ## Target-Aware Runs
 
 LAREX can dispatch page, region, and textline targeted runs. The SDK exposes the

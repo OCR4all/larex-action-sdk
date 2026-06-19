@@ -37,6 +37,8 @@ def create_larex_action_app(
     allowed_callback_origins_env: str = "LAREX_ALLOWED_CALLBACK_ORIGINS",
     allow_insecure_local_urls: bool = True,
     max_dispatch_body_bytes: int = 1_048_576,
+    route_prefixes: Iterable[str] | None = None,
+    route_prefixes_env: str = "LAREX_ACTION_ROUTE_PREFIXES",
 ) -> FastAPI:
     if max_dispatch_body_bytes <= 0:
         raise ValueError("max_dispatch_body_bytes must be positive")
@@ -54,13 +56,12 @@ def create_larex_action_app(
         allowed_callback_origins,
         allowed_callback_origins_env,
     )
+    resolved_route_prefixes = _resolve_route_prefixes(route_prefixes, route_prefixes_env)
     fastapi_app = app or FastAPI(title=f"LAREX Action Processor: {processor_id}")
 
-    @fastapi_app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @fastapi_app.post("/dispatch")
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
         body = await _read_limited_body(request, max_dispatch_body_bytes)
         raw_path = request.scope.get("raw_path")
@@ -90,6 +91,10 @@ def create_larex_action_app(
             allow_insecure_local_urls,
         )
         return {"status": "accepted", "runId": payload.run_id}
+
+    for prefix in resolved_route_prefixes:
+        fastapi_app.add_api_route(f"{prefix}/health", health, methods=["GET"])
+        fastapi_app.add_api_route(f"{prefix}/dispatch", dispatch, methods=["POST"])
 
     return fastapi_app
 
@@ -161,3 +166,36 @@ def _resolve_allowed_origins(
     if not raw:
         return None
     return {origin.strip() for origin in raw.split(",") if origin.strip()}
+
+
+def _resolve_route_prefixes(
+    explicit: Iterable[str] | None,
+    env_name: str,
+) -> list[str]:
+    raw_prefixes = explicit
+    if raw_prefixes is None:
+        raw = os.getenv(env_name)
+        raw_prefixes = raw.split(",") if raw else []
+
+    prefixes = [""]
+    seen = {""}
+    for raw_prefix in raw_prefixes:
+        prefix = _normalize_route_prefix(raw_prefix)
+        if prefix not in seen:
+            prefixes.append(prefix)
+            seen.add(prefix)
+    return prefixes
+
+
+def _normalize_route_prefix(value: str) -> str:
+    prefix = value.strip()
+    if not prefix or prefix == "/":
+        return ""
+    if "?" in prefix or "#" in prefix:
+        raise ValueError("route prefixes must not include query strings or fragments")
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    normalized = prefix.rstrip("/")
+    if "//" in normalized:
+        raise ValueError("route prefixes must not contain empty path segments")
+    return normalized

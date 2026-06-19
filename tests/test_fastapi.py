@@ -37,6 +37,82 @@ async def test_fastapi_adapter_accepts_dispatch_and_runs_handler() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fastapi_adapter_accepts_prefixed_dispatch_route() -> None:
+    calls: list[str] = []
+
+    async def process(ctx: ActionContext) -> None:
+        calls.append(ctx.run_id)
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        route_prefixes=["/kraken"],
+    )
+    body, headers = signed_dispatch(path_and_query="/kraken/dispatch")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/kraken/dispatch", content=body, headers=headers)
+        health_response = await client.get("/kraken/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted", "runId": "run-1"}
+    assert health_response.status_code == 200
+    assert health_response.json() == {"status": "ok"}
+    assert calls == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_keeps_unprefixed_dispatch_route_with_prefixes() -> None:
+    calls: list[str] = []
+
+    async def process(ctx: ActionContext) -> None:
+        calls.append(ctx.run_id)
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        route_prefixes=["/kraken"],
+    )
+    body, headers = signed_dispatch()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/dispatch", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert calls == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_rejects_prefixed_dispatch_with_unprefixed_signature() -> None:
+    async def process(ctx: ActionContext) -> None:
+        raise AssertionError("should not run")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        route_prefixes=["/kraken"],
+    )
+    body, headers = signed_dispatch(path_and_query="/dispatch")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/kraken/dispatch", content=body, headers=headers)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_fastapi_adapter_rejects_invalid_dispatch() -> None:
     async def process(ctx: ActionContext) -> None:
         raise AssertionError("should not run")
