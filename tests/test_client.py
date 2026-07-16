@@ -154,6 +154,50 @@ async def test_client_submits_incremental_page_result_and_empty_completion() -> 
 
 
 @pytest.mark.asyncio
+async def test_result_submission_retries_and_reopens_path_files(tmp_path: Path) -> None:
+    result_path = tmp_path / "page.xml"
+    result_path.write_bytes(b"<PcGts/>")
+    request_bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_bodies.append(request.content)
+        if len(request_bodies) == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"})
+        return httpx.Response(200, json={"id": "run-1", "status": "RUNNING"})
+
+    results = ResultBuilder()
+    results.add_xml_path("page-1", result_path)
+    payload = dispatch_payload_model(capabilities={"incrementalPageResults": True})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload,
+            client=http_client,
+            result_retry_backoff=0,
+        )
+        await client.submit_page_results("page-1", results)
+
+    assert len(request_bodies) == 2
+    assert all(b"<PcGts/>" in body for body in request_bodies)
+
+
+@pytest.mark.asyncio
+async def test_result_submission_does_not_retry_client_errors() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(400, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.complete()
+
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_client_rejects_incremental_results_without_server_capability() -> None:
     results = ResultBuilder()
     async with httpx.AsyncClient(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -34,6 +35,38 @@ async def test_fastapi_adapter_accepts_dispatch_and_runs_handler() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "runId": "run-1"}
     assert calls == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_reports_busy_while_concurrency_slot_is_occupied() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def process(_ctx: ActionContext) -> None:
+        started.set()
+        await release.wait()
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        max_concurrent_runs=1,
+    )
+    body, headers = signed_dispatch()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        dispatch_task = asyncio.create_task(client.post("/dispatch", content=body, headers=headers))
+        await started.wait()
+        ready_response = await client.get("/ready")
+        release.set()
+        dispatch_response = await dispatch_task
+
+    assert ready_response.status_code == 503
+    assert ready_response.json() == {"status": "busy"}
+    assert dispatch_response.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
+import random
 from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -49,6 +50,9 @@ class ActionClient:
         allowed_callback_origins: Collection[str] | None = None,
         allow_insecure_local_urls: bool = True,
         supports_incremental_page_results: bool = False,
+        result_max_attempts: int = 4,
+        result_retry_backoff: float = 0.5,
+        result_retry_max_backoff: float = 8.0,
     ) -> None:
         self._trusted_origin = _validate_callback_urls(
             pull_url=pull_url,
@@ -70,6 +74,13 @@ class ActionClient:
         self._cancelled_reported = False
         self._supports_incremental_page_results = supports_incremental_page_results
         self._incremental_submission_started = False
+        if result_max_attempts < 1:
+            raise ValueError("result_max_attempts must be at least 1")
+        if result_retry_backoff < 0 or result_retry_max_backoff < 0:
+            raise ValueError("result retry backoff values must not be negative")
+        self._result_max_attempts = result_max_attempts
+        self._result_retry_backoff = result_retry_backoff
+        self._result_retry_max_backoff = result_retry_max_backoff
 
     @classmethod
     def from_dispatch(
@@ -81,6 +92,9 @@ class ActionClient:
         enforce_url_security: bool = True,
         allowed_callback_origins: Collection[str] | None = None,
         allow_insecure_local_urls: bool = True,
+        result_max_attempts: int = 4,
+        result_retry_backoff: float = 0.5,
+        result_retry_max_backoff: float = 8.0,
     ) -> ActionClient:
         return cls(
             pull_url=payload.pull_url,
@@ -93,6 +107,9 @@ class ActionClient:
             allowed_callback_origins=allowed_callback_origins,
             allow_insecure_local_urls=allow_insecure_local_urls,
             supports_incremental_page_results=payload.capabilities.incremental_page_results,
+            result_max_attempts=result_max_attempts,
+            result_retry_backoff=result_retry_backoff,
+            result_retry_max_backoff=result_retry_max_backoff,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -295,20 +312,48 @@ class ActionClient:
         message: str | None,
         page_id: str | None,
     ) -> Mapping[str, Any]:
-        with ExitStack() as exit_stack:
-            response = await self._client.post(
-                self.result_url,
-                headers=self._auth_headers(),
-                files=results.httpx_files(
-                    status=status,
-                    message=message,
-                    page_id=page_id,
-                    exit_stack=exit_stack,
-                ),
-            )
-        response.raise_for_status()
-        data = response.json()
-        return data if isinstance(data, Mapping) else {"response": data}
+        for attempt in range(1, self._result_max_attempts + 1):
+            response: httpx.Response | None = None
+            try:
+                with ExitStack() as exit_stack:
+                    response = await self._client.post(
+                        self.result_url,
+                        headers=self._auth_headers(),
+                        files=results.httpx_files(
+                            status=status,
+                            message=message,
+                            page_id=page_id,
+                            exit_stack=exit_stack,
+                        ),
+                    )
+                if (
+                    _is_retryable_result_status(response.status_code)
+                    and attempt < self._result_max_attempts
+                ):
+                    await asyncio.sleep(self._result_retry_delay(attempt, response))
+                    continue
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, Mapping) else {"response": data}
+            except httpx.TransportError:
+                if attempt >= self._result_max_attempts:
+                    raise
+                await asyncio.sleep(self._result_retry_delay(attempt, response))
+        raise RuntimeError("Result submission retry loop exited unexpectedly")
+
+    def _result_retry_delay(self, attempt: int, response: httpx.Response | None) -> float:
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after is not None:
+                try:
+                    return max(0.0, min(float(retry_after), self._result_retry_max_backoff))
+                except ValueError:
+                    pass
+        exponential = min(
+            self._result_retry_max_backoff,
+            self._result_retry_backoff * (2 ** (attempt - 1)),
+        )
+        return random.uniform(0, exponential)
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._secret}"}
@@ -587,6 +632,10 @@ def _require_https_or_local(
 def _normalize_origin(origin: str) -> str:
     parsed = _parse_url(origin, "allowed_callback_origins")
     return _origin(parsed)
+
+
+def _is_retryable_result_status(status_code: int) -> bool:
+    return status_code in {408, 429, 502, 503, 504}
 
 
 def _origin(parsed: SplitResult) -> str:

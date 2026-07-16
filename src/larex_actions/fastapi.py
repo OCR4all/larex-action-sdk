@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # pyright: reportUnusedFunction=false
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable
@@ -12,7 +13,7 @@ from .nonce import NonceStore
 from .verifier import DispatchVerifier
 
 try:
-    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install larex-action-sdk[fastapi] to use larex_actions.fastapi") from exc
 
@@ -39,9 +40,12 @@ def create_larex_action_app(
     max_dispatch_body_bytes: int = 1_048_576,
     route_prefixes: Iterable[str] | None = None,
     route_prefixes_env: str = "LAREX_ACTION_ROUTE_PREFIXES",
+    max_concurrent_runs: int | None = None,
 ) -> FastAPI:
     if max_dispatch_body_bytes <= 0:
         raise ValueError("max_dispatch_body_bytes must be positive")
+    if max_concurrent_runs is not None and max_concurrent_runs <= 0:
+        raise ValueError("max_concurrent_runs must be positive when configured")
     resolved_secret = dispatch_secret or os.getenv(dispatch_secret_env)
     if not resolved_secret:
         raise ValueError(f"Dispatch secret is not configured: {dispatch_secret_env}")
@@ -58,9 +62,16 @@ def create_larex_action_app(
     )
     resolved_route_prefixes = _resolve_route_prefixes(route_prefixes, route_prefixes_env)
     fastapi_app = app or FastAPI(title=f"LAREX Action Processor: {processor_id}")
+    run_semaphore = asyncio.Semaphore(max_concurrent_runs) if max_concurrent_runs else None
 
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    async def readiness(response: Response) -> dict[str, str | int]:
+        if run_semaphore is not None and run_semaphore.locked():
+            response.status_code = 503
+            return {"status": "busy"}
+        return {"status": "ready", "capacity": max_concurrent_runs or -1}
 
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
         body = await _read_limited_body(request, max_dispatch_body_bytes)
@@ -89,11 +100,13 @@ def create_larex_action_app(
             enforce_url_security,
             resolved_allowed_origins,
             allow_insecure_local_urls,
+            run_semaphore,
         )
         return {"status": "accepted", "runId": payload.run_id}
 
     for prefix in resolved_route_prefixes:
         fastapi_app.add_api_route(f"{prefix}/health", health, methods=["GET"])
+        fastapi_app.add_api_route(f"{prefix}/ready", readiness, methods=["GET"])
         fastapi_app.add_api_route(f"{prefix}/dispatch", dispatch, methods=["POST"])
 
     return fastapi_app
@@ -119,6 +132,36 @@ async def _read_limited_body(request: Request, max_bytes: int) -> bytes:
 
 
 async def _run_handler(
+    payload: ActionDispatchPayload,
+    handler: Handler,
+    client_factory: ClientFactory | None,
+    enforce_url_security: bool,
+    allowed_callback_origins: set[str] | None,
+    allow_insecure_local_urls: bool,
+    run_semaphore: asyncio.Semaphore | None,
+) -> None:
+    if run_semaphore is not None:
+        async with run_semaphore:
+            await _execute_handler(
+                payload,
+                handler,
+                client_factory,
+                enforce_url_security,
+                allowed_callback_origins,
+                allow_insecure_local_urls,
+            )
+        return
+    await _execute_handler(
+        payload,
+        handler,
+        client_factory,
+        enforce_url_security,
+        allowed_callback_origins,
+        allow_insecure_local_urls,
+    )
+
+
+async def _execute_handler(
     payload: ActionDispatchPayload,
     handler: Handler,
     client_factory: ClientFactory | None,

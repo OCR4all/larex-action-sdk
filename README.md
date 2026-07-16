@@ -55,6 +55,7 @@ app = create_larex_action_app(
     processor_id="my-processor",
     dispatch_secret=os.environ["LAREX_DISPATCH_HMAC_SECRET"],
     handler=process,
+    max_concurrent_runs=1,
 )
 ```
 
@@ -62,6 +63,18 @@ Incremental page submissions require LAREX to advertise
 `capabilities.incrementalPageResults`. The SDK refuses the submission when an
 older server does not advertise it. Existing processors can continue to call
 `await ctx.complete(results, "Done")` once with a bulk result.
+
+`max_concurrent_runs` bounds simultaneous in-process handlers for CPU/GPU-heavy
+processors. Additional signed dispatches remain accepted and wait for a slot.
+`/ready` returns `503` while every slot is occupied; `/health` remains a liveness
+endpoint. For crash-durable queuing, run the handler in an external worker system
+instead of relying on FastAPI background tasks.
+
+Result callbacks retry connection failures and transient HTTP responses (`408`,
+`429`, `502`, `503`, and `504`) automatically. Path-based files are reopened for
+every attempt. The defaults are four attempts with exponential backoff and jitter;
+processors can tune `result_max_attempts`, `result_retry_backoff`, and
+`result_retry_max_backoff` on `ActionClient` or `ActionClient.from_dispatch(...)`.
 
 The FastAPI adapter always exposes `/dispatch` and `/health`. Set
 `LAREX_ACTION_ROUTE_PREFIXES` to also expose prefixed routes when a reverse
