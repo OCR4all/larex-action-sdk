@@ -13,7 +13,7 @@ from urllib.parse import SplitResult, urlsplit
 import httpx
 from pydantic import BaseModel
 
-from .exceptions import ActionCancelled, ActionUrlSecurityError
+from .exceptions import ActionCancelled, ActionUrlSecurityError, IncrementalResultsUnsupported
 from .models import (
     ActionDispatchPayload,
     ActionFile,
@@ -48,6 +48,7 @@ class ActionClient:
         enforce_url_security: bool = True,
         allowed_callback_origins: Collection[str] | None = None,
         allow_insecure_local_urls: bool = True,
+        supports_incremental_page_results: bool = False,
     ) -> None:
         self._trusted_origin = _validate_callback_urls(
             pull_url=pull_url,
@@ -67,6 +68,8 @@ class ActionClient:
         self._owns_client = client is None
         self._cancel_requested = False
         self._cancelled_reported = False
+        self._supports_incremental_page_results = supports_incremental_page_results
+        self._incremental_submission_started = False
 
     @classmethod
     def from_dispatch(
@@ -89,6 +92,7 @@ class ActionClient:
             enforce_url_security=enforce_url_security,
             allowed_callback_origins=allowed_callback_origins,
             allow_insecure_local_urls=allow_insecure_local_urls,
+            supports_incremental_page_results=payload.capabilities.incremental_page_results,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -203,11 +207,40 @@ class ActionClient:
 
     async def complete(
         self,
+        results: ResultBuilder | None = None,
+        message: str | None = None,
+    ) -> Mapping[str, Any]:
+        await self._ensure_results_allowed()
+        if self._incremental_submission_started and results is not None and results.files:
+            raise ValueError("Incremental runs must be completed without bulk result files")
+        return await self._post_results(
+            results or ResultBuilder(), status="completed", message=message, page_id=None
+        )
+
+    async def submit_page_results(
+        self,
+        page_id: str,
         results: ResultBuilder,
         message: str | None = None,
     ) -> Mapping[str, Any]:
         await self._ensure_results_allowed()
-        return await self._post_results(results, status="completed", message=message)
+        if not self._supports_incremental_page_results:
+            raise IncrementalResultsUnsupported(
+                "This LAREX server did not advertise incrementalPageResults support"
+            )
+        if not page_id.strip():
+            raise ValueError("page_id must not be blank")
+        mismatched_page_ids = {file.page_id for file in results.files if file.page_id != page_id}
+        if mismatched_page_ids:
+            raise ValueError("Every incremental result file must match page_id")
+        response = await self._post_results(
+            results,
+            status="running",
+            message=message,
+            page_id=page_id,
+        )
+        self._incremental_submission_started = True
+        return response
 
     async def upload_results(
         self,
@@ -217,7 +250,11 @@ class ActionClient:
         message: str | None = None,
     ) -> Mapping[str, Any]:
         await self._ensure_results_allowed()
-        return await self._post_results(results, status=status, message=message)
+        if status == "running":
+            raise ValueError("Use submit_page_results for running incremental results")
+        if self._incremental_submission_started and results.files:
+            raise ValueError("Incremental runs cannot upload bulk result files")
+        return await self._post_results(results, status=status, message=message, page_id=None)
 
     async def fail(
         self,
@@ -256,12 +293,18 @@ class ActionClient:
         *,
         status: ResultStatus,
         message: str | None,
+        page_id: str | None,
     ) -> Mapping[str, Any]:
         with ExitStack() as exit_stack:
             response = await self._client.post(
                 self.result_url,
                 headers=self._auth_headers(),
-                files=results.httpx_files(status=status, message=message, exit_stack=exit_stack),
+                files=results.httpx_files(
+                    status=status,
+                    message=message,
+                    page_id=page_id,
+                    exit_stack=exit_stack,
+                ),
             )
         response.raise_for_status()
         data = response.json()
@@ -455,10 +498,18 @@ class ActionContext:
 
     async def complete(
         self,
-        results: ResultBuilder,
+        results: ResultBuilder | None = None,
         message: str | None = None,
     ) -> Mapping[str, Any]:
         return await self.client.complete(results, message)
+
+    async def submit_page_results(
+        self,
+        page_id: str,
+        results: ResultBuilder,
+        message: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self.client.submit_page_results(page_id, results, message)
 
     async def upload_results(
         self,

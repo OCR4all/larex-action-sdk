@@ -16,3 +16,7 @@ class ActionCancelled(LarexActionError):
 
 class ActionUrlSecurityError(LarexActionError):
     """Raised when a LAREX callback or download URL violates the SDK URL policy."""
+
+
+class IncrementalResultsUnsupported(LarexActionError):
+    """Raised when a processor requests incremental results from an older LAREX server."""

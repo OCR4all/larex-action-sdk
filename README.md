@@ -35,11 +35,10 @@ from larex_actions.fastapi import create_larex_action_app
 
 async def process(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
-    results = ctx.result_builder()
-
     for page in action_input.pages:
         async with ctx.step(f"Processing {page.name}", progress_percent=25):
             await ctx.check_cancelled()
+            results = ctx.result_builder()
             if page.xml:
                 xml_bytes = await ctx.download_bytes(page.xml[0])
                 results.add_xml_bytes(
@@ -47,8 +46,9 @@ async def process(ctx: ActionContext) -> None:
                     content=xml_bytes,
                     file_name=f"{page.name}-processed.xml",
                 )
+            await ctx.submit_page_results(page.id, results, f"Finished {page.name}")
 
-    await ctx.complete(results, "Done")
+    await ctx.complete(message="Done")
 
 
 app = create_larex_action_app(
@@ -57,6 +57,11 @@ app = create_larex_action_app(
     handler=process,
 )
 ```
+
+Incremental page submissions require LAREX to advertise
+`capabilities.incrementalPageResults`. The SDK refuses the submission when an
+older server does not advertise it. Existing processors can continue to call
+`await ctx.complete(results, "Done")` once with a bulk result.
 
 The FastAPI adapter always exposes `/dispatch` and `/health`. Set
 `LAREX_ACTION_ROUTE_PREFIXES` to also expose prefixed routes when a reverse

@@ -15,6 +15,7 @@ from larex_actions import (
     ActionContext,
     ActionInput,
     ActionUrlSecurityError,
+    IncrementalResultsUnsupported,
     ResultBuilder,
 )
 
@@ -125,6 +126,80 @@ def test_result_builder_manifest_and_paths(tmp_path: Path) -> None:
     assert manifest.protocol_version == 1
     assert [file.type for file in manifest.files] == ["image", "xml"]
     assert manifest.files[1].file_name == "page-copy.xml"
+
+
+@pytest.mark.asyncio
+async def test_client_submits_incremental_page_result_and_empty_completion() -> None:
+    request_bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_bodies.append(request.content)
+        return httpx.Response(200, json={"id": "run-1", "status": "RUNNING"})
+
+    payload = dispatch_payload_model(
+        capabilities={"incrementalPageResults": True},
+    )
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        await client.submit_page_results("page-1", results, "Page done")
+        await client.complete(message="All done")
+
+    assert b'"status":"running"' in request_bodies[0]
+    assert b'"pageId":"page-1"' in request_bodies[0]
+    assert b'"status":"completed"' in request_bodies[1]
+    assert b'"files":[]' in request_bodies[1]
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_incremental_results_without_server_capability() -> None:
+    results = ResultBuilder()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    ) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(IncrementalResultsUnsupported):
+            await client.submit_page_results("page-1", results)
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_mixed_page_incremental_builder() -> None:
+    results = ResultBuilder()
+    results.add_xml_bytes("page-2", b"<PcGts/>", "page.xml")
+    payload = dispatch_payload_model(capabilities={"incrementalPageResults": True})
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    ) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        with pytest.raises(ValueError, match="match page_id"):
+            await client.submit_page_results("page-1", results)
+
+
+@pytest.mark.asyncio
+async def test_generic_upload_cannot_bypass_incremental_capability_gate() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    ) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(ValueError, match="submit_page_results"):
+            await client.upload_results(ResultBuilder(), status="running")
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_bulk_files_after_incremental_submission() -> None:
+    payload = dispatch_payload_model(capabilities={"incrementalPageResults": True})
+    first = ResultBuilder()
+    bulk = ResultBuilder()
+    bulk.add_xml_bytes("page-2", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+    ) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        await client.submit_page_results("page-1", first)
+        with pytest.raises(ValueError, match="without bulk"):
+            await client.complete(bulk)
 
 
 def test_action_input_parses_target_metadata() -> None:

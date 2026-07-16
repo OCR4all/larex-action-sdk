@@ -3,10 +3,12 @@ from .exceptions import (
     ActionCancelled,
     ActionUrlSecurityError,
     DispatchVerificationError,
+    IncrementalResultsUnsupported,
     LarexActionError,
 )
 from .models import (
     PROTOCOL_VERSION,
+    ActionCapabilities,
     ActionDispatchPayload,
     ActionFile,
     ActionInput,
@@ -30,6 +32,7 @@ from .verifier import DispatchVerifier
 __all__ = [
     "PROTOCOL_VERSION",
     "ActionCancelled",
+    "ActionCapabilities",
     "ActionClient",
     "ActionContext",
     "ActionDispatchPayload",
@@ -46,6 +49,7 @@ __all__ = [
     "DispatchVerifier",
     "FileType",
     "HeartbeatResponse",
+    "IncrementalResultsUnsupported",
     "LarexActionError",
     "NonceStore",
     "ResultBuilder",

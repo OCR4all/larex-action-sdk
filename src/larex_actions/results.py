@@ -109,18 +109,23 @@ class ResultBuilder:
         )
 
     def manifest(
-        self, *, status: ResultStatus = "completed", message: str | None = None
+        self,
+        *,
+        status: ResultStatus = "completed",
+        message: str | None = None,
+        page_id: str | None = None,
     ) -> ResultManifest:
-        return ResultManifest(status=status, message=message, files=self.files)
+        return ResultManifest(status=status, message=message, pageId=page_id, files=self.files)
 
     def httpx_files(
         self,
         *,
         status: ResultStatus = "completed",
         message: str | None = None,
+        page_id: str | None = None,
         exit_stack: ExitStack,
     ) -> list[HttpxFile]:
-        manifest = self.manifest(status=status, message=message)
+        manifest = self.manifest(status=status, message=message, page_id=page_id)
         files: list[HttpxFile] = [
             (
                 "manifest",
