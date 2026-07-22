@@ -64,6 +64,36 @@ Incremental page submissions require LAREX to advertise
 older server does not advertise it. Existing processors can continue to call
 `await ctx.complete(results, "Done")` once with a bulk result.
 
+## Custom File Results
+
+LAREX servers that advertise `capabilities.customFileResults` accept arbitrary
+durable files. Check the capability before doing expensive postprocessing and
+add project-level bytes or paths to a result builder:
+
+```python
+if not ctx.capabilities.custom_file_results:
+    raise RuntimeError("This LAREX server does not support custom file results")
+
+results = ctx.result_builder()
+results.add_file_bytes(
+    content=ner_jsonl,
+    file_name="named-entities.jsonl",
+    mime_type="application/x-ndjson",
+)
+results.add_file_path(
+    report_path,
+    file_name="report.txt",
+    mime_type="text/plain",
+)
+await ctx.complete(results, "Postprocessing complete")
+```
+
+Omit `page_id` for project-level files. Pass `page_id=page.id` when associating a
+file with a page. Incremental page submissions require every file—including a
+custom file—to carry the same page ID as the submission. The client raises
+`CustomFileResultsUnsupported` before uploading if the server did not advertise
+support.
+
 `max_concurrent_runs` bounds simultaneous in-process handlers for CPU/GPU-heavy
 processors. Additional signed dispatches remain accepted and wait for a slot.
 `/ready` returns `503` while every slot is occupied; `/health` remains a liveness

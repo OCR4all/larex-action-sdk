@@ -20,3 +20,7 @@ class ActionUrlSecurityError(LarexActionError):
 
 class IncrementalResultsUnsupported(LarexActionError):
     """Raised when a processor requests incremental results from an older LAREX server."""
+
+
+class CustomFileResultsUnsupported(LarexActionError):
+    """Raised when a processor returns custom files to an older LAREX server."""

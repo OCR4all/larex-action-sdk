@@ -14,7 +14,7 @@ HttpxFile = tuple[str, tuple[str, bytes | BinaryIO | str, str]]
 @dataclass(frozen=True)
 class _PendingResultFile:
     field_name: str
-    page_id: str
+    page_id: str | None
     type: FileType
     variant: str | None
     file_name: str
@@ -108,6 +108,41 @@ class ResultBuilder:
             type_="xml",
         )
 
+    def add_file_bytes(
+        self,
+        content: bytes,
+        file_name: str,
+        *,
+        mime_type: str = "application/octet-stream",
+        page_id: str | None = None,
+    ) -> None:
+        self._add_file(
+            page_id=page_id,
+            content=content,
+            file_name=file_name,
+            variant=None,
+            mime_type=mime_type,
+            type_="file",
+        )
+
+    def add_file_path(
+        self,
+        path: str | Path,
+        *,
+        file_name: str | None = None,
+        mime_type: str = "application/octet-stream",
+        page_id: str | None = None,
+    ) -> None:
+        path_value = Path(path)
+        self._add_file(
+            page_id=page_id,
+            content=path_value,
+            file_name=file_name or path_value.name,
+            variant=None,
+            mime_type=mime_type,
+            type_="file",
+        )
+
     def manifest(
         self,
         *,
@@ -148,14 +183,16 @@ class ResultBuilder:
     def _add_file(
         self,
         *,
-        page_id: str,
+        page_id: str | None,
         content: FileContent,
         file_name: str,
         variant: str | None,
         mime_type: str,
         type_: FileType,
     ) -> None:
-        if not page_id:
+        if type_ != "file" and not page_id:
+            raise ValueError("page_id must not be blank")
+        if page_id is not None and not page_id.strip():
             raise ValueError("page_id must not be blank")
         if not file_name:
             raise ValueError("file_name must not be blank")

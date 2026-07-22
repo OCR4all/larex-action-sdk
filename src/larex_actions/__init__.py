@@ -2,6 +2,7 @@ from .client import ActionClient, ActionContext, ActionSubprocessResult
 from .exceptions import (
     ActionCancelled,
     ActionUrlSecurityError,
+    CustomFileResultsUnsupported,
     DispatchVerificationError,
     IncrementalResultsUnsupported,
     LarexActionError,
@@ -45,6 +46,7 @@ __all__ = [
     "ActionTarget",
     "ActionTargetSelection",
     "ActionUrlSecurityError",
+    "CustomFileResultsUnsupported",
     "DispatchVerificationError",
     "DispatchVerifier",
     "FileType",

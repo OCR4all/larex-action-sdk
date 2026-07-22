@@ -14,8 +14,14 @@ from urllib.parse import SplitResult, urlsplit
 import httpx
 from pydantic import BaseModel
 
-from .exceptions import ActionCancelled, ActionUrlSecurityError, IncrementalResultsUnsupported
+from .exceptions import (
+    ActionCancelled,
+    ActionUrlSecurityError,
+    CustomFileResultsUnsupported,
+    IncrementalResultsUnsupported,
+)
 from .models import (
+    ActionCapabilities,
     ActionDispatchPayload,
     ActionFile,
     ActionInput,
@@ -50,6 +56,7 @@ class ActionClient:
         allowed_callback_origins: Collection[str] | None = None,
         allow_insecure_local_urls: bool = True,
         supports_incremental_page_results: bool = False,
+        supports_custom_file_results: bool = False,
         result_max_attempts: int = 4,
         result_retry_backoff: float = 0.5,
         result_retry_max_backoff: float = 8.0,
@@ -73,6 +80,7 @@ class ActionClient:
         self._cancel_requested = False
         self._cancelled_reported = False
         self._supports_incremental_page_results = supports_incremental_page_results
+        self._supports_custom_file_results = supports_custom_file_results
         self._incremental_submission_started = False
         if result_max_attempts < 1:
             raise ValueError("result_max_attempts must be at least 1")
@@ -107,6 +115,7 @@ class ActionClient:
             allowed_callback_origins=allowed_callback_origins,
             allow_insecure_local_urls=allow_insecure_local_urls,
             supports_incremental_page_results=payload.capabilities.incremental_page_results,
+            supports_custom_file_results=payload.capabilities.custom_file_results,
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
@@ -126,6 +135,13 @@ class ActionClient:
         response = await self._client.get(self.pull_url, headers=self._auth_headers())
         response.raise_for_status()
         action_input = ActionInput.model_validate(response.json())
+        self._supports_incremental_page_results = (
+            self._supports_incremental_page_results
+            or action_input.capabilities.incremental_page_results
+        )
+        self._supports_custom_file_results = (
+            self._supports_custom_file_results or action_input.capabilities.custom_file_results
+        )
         self._cancel_requested = self._cancel_requested or action_input.cancel_requested
         return action_input
 
@@ -312,6 +328,12 @@ class ActionClient:
         message: str | None,
         page_id: str | None,
     ) -> Mapping[str, Any]:
+        if any(file.type == "file" for file in results.files) and not (
+            self._supports_custom_file_results
+        ):
+            raise CustomFileResultsUnsupported(
+                "This LAREX server did not advertise customFileResults support"
+            )
         for attempt in range(1, self._result_max_attempts + 1):
             response: httpx.Response | None = None
             try:
@@ -387,6 +409,10 @@ class ActionContext:
     @property
     def parameters(self) -> dict[str, Any]:
         return self.payload.parameters
+
+    @property
+    def capabilities(self) -> ActionCapabilities:
+        return self.payload.capabilities
 
     def parameters_as(self, model: type[ParameterModelT]) -> ParameterModelT:
         return model.model_validate(self.payload.parameters)

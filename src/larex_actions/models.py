@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 RunStatus = Literal["running", "failed", "cancelled"]
 ResultStatus = Literal["running", "completed", "failed"]
-FileType = Literal["image", "xml"]
+FileType = Literal["image", "xml", "file"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
 PROTOCOL_VERSION = 1
 
@@ -28,6 +28,7 @@ class ActionTargetSelection(LarexModel):
 
 class ActionCapabilities(LarexModel):
     incremental_page_results: bool = Field(default=False, alias="incrementalPageResults")
+    custom_file_results: bool = Field(default=False, alias="customFileResults")
 
 
 class ActionDispatchPayload(LarexModel):
@@ -94,7 +95,7 @@ class HeartbeatResponse(LarexModel):
 
 class ResultFile(LarexModel):
     field_name: str = Field(alias="fieldName")
-    page_id: str = Field(alias="pageId")
+    page_id: str | None = Field(default=None, alias="pageId")
     type: FileType
     variant: str | None = None
     file_name: str = Field(alias="fileName")

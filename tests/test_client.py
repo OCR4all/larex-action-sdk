@@ -15,6 +15,7 @@ from larex_actions import (
     ActionContext,
     ActionInput,
     ActionUrlSecurityError,
+    CustomFileResultsUnsupported,
     IncrementalResultsUnsupported,
     ResultBuilder,
 )
@@ -205,6 +206,65 @@ async def test_client_rejects_incremental_results_without_server_capability() ->
     ) as http_client:
         client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
         with pytest.raises(IncrementalResultsUnsupported):
+            await client.submit_page_results("page-1", results)
+
+
+@pytest.mark.asyncio
+async def test_client_rejects_custom_files_without_server_capability() -> None:
+    results = ResultBuilder()
+    results.add_file_bytes(b"content", "result.txt", mime_type="text/plain")
+    request_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(CustomFileResultsUnsupported, match="customFileResults"):
+            await client.complete(results)
+
+    assert request_count == 0
+
+
+@pytest.mark.asyncio
+async def test_client_uploads_project_level_custom_file_with_capability() -> None:
+    request_bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_bodies.append(request.content)
+        return httpx.Response(200, json={"status": "COMPLETED"})
+
+    payload = dispatch_payload_model(capabilities={"customFileResults": True})
+    results = ResultBuilder()
+    results.add_file_bytes(
+        b'{"entity":"Ada"}\n',
+        "entities.jsonl",
+        mime_type="application/x-ndjson",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        response = await client.complete(results)
+
+    assert response["status"] == "COMPLETED"
+    assert b'"type":"file"' in request_bodies[0]
+    assert b'"pageId"' not in request_bodies[0]
+    assert b"application/x-ndjson" in request_bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_incremental_custom_file_requires_matching_page_id() -> None:
+    payload = dispatch_payload_model(
+        capabilities={"incrementalPageResults": True, "customFileResults": True}
+    )
+    results = ResultBuilder()
+    results.add_file_bytes(b"content", "result.txt", mime_type="text/plain")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(500))
+    ) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        with pytest.raises(ValueError, match="match page_id"):
             await client.submit_page_results("page-1", results)
 
 
