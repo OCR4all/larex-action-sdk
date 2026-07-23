@@ -31,6 +31,21 @@ class ActionCapabilities(LarexModel):
     custom_file_results: bool = Field(default=False, alias="customFileResults")
 
 
+class PreflightRequest(LarexModel):
+    protocol_version: Literal[1] = Field(alias="protocolVersion")
+    request_id: str = Field(alias="requestId")
+    processor_id: str = Field(alias="processorId")
+    capabilities: ActionCapabilities = Field(default_factory=ActionCapabilities)
+
+
+class PreflightResponse(LarexModel):
+    status: Literal["ok"] = "ok"
+    protocol_version: Literal[1] = Field(default=PROTOCOL_VERSION, alias="protocolVersion")
+    request_id: str = Field(alias="requestId")
+    processor_id: str = Field(alias="processorId")
+    capabilities: ActionCapabilities
+
+
 class ActionDispatchPayload(LarexModel):
     protocol_version: Literal[1] = Field(alias="protocolVersion")
     run_id: str = Field(alias="runId")

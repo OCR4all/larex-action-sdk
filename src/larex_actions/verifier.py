@@ -6,11 +6,12 @@ import hmac
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from .exceptions import DispatchVerificationError
-from .models import ActionDispatchPayload
+from .models import ActionDispatchPayload, PreflightRequest
 from .nonce import NonceStore
 
 AUTH_HEADER = "x-larex-action-auth"
@@ -20,6 +21,7 @@ TIMESTAMP_HEADER = "x-larex-action-timestamp"
 NONCE_HEADER = "x-larex-action-nonce"
 BODY_HASH_HEADER = "x-larex-action-body-sha256"
 SIGNATURE_HEADER = "x-larex-action-signature"
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class DispatchVerifier:
@@ -48,6 +50,54 @@ class DispatchVerifier:
         headers: Mapping[str, str],
         body: bytes | str,
     ) -> ActionDispatchPayload:
+        raw_body, header_run, header_processor, timestamp, nonce = self._verify_envelope(
+            method=method,
+            path_and_query=path_and_query,
+            headers=headers,
+            body=body,
+        )
+        payload = self._parse_model(raw_body, ActionDispatchPayload, "Dispatch payload")
+
+        if header_processor != payload.processor_id or payload.processor_id != self.processor_id:
+            raise DispatchVerificationError("Processor id mismatch")
+        if header_run != payload.run_id:
+            raise DispatchVerificationError("Run id mismatch")
+
+        self._accept(timestamp, nonce)
+        return payload
+
+    def verify_preflight(
+        self,
+        *,
+        method: str,
+        path_and_query: str,
+        headers: Mapping[str, str],
+        body: bytes | str,
+    ) -> PreflightRequest:
+        raw_body, header_run, header_processor, timestamp, nonce = self._verify_envelope(
+            method=method,
+            path_and_query=path_and_query,
+            headers=headers,
+            body=body,
+        )
+        payload = self._parse_model(raw_body, PreflightRequest, "Preflight payload")
+
+        if header_processor != payload.processor_id or payload.processor_id != self.processor_id:
+            raise DispatchVerificationError("Processor id mismatch")
+        if header_run != payload.request_id:
+            raise DispatchVerificationError("Preflight request id mismatch")
+
+        self._accept(timestamp, nonce)
+        return payload
+
+    def _verify_envelope(
+        self,
+        *,
+        method: str,
+        path_and_query: str,
+        headers: Mapping[str, str],
+        body: bytes | str,
+    ) -> tuple[bytes, str, str, str, str]:
         raw_body = body.encode("utf-8") if isinstance(body, str) else body
         if not raw_body:
             raise DispatchVerificationError("Dispatch body is empty", status_code=400)
@@ -89,31 +139,33 @@ class DispatchVerifier:
         if not hmac.compare_digest(expected_signature, signature):
             raise DispatchVerificationError("Dispatch signature mismatch")
 
+        return raw_body, header_run, header_processor, timestamp, nonce
+
+    def _parse_model(
+        self,
+        raw_body: bytes,
+        model_type: type[ModelT],
+        payload_name: str,
+    ) -> ModelT:
         try:
             payload_data = json.loads(raw_body)
         except json.JSONDecodeError as exc:
             raise DispatchVerificationError(
-                "Dispatch body is not valid JSON",
+                f"{payload_name} is not valid JSON",
                 status_code=400,
             ) from exc
 
         try:
-            payload = ActionDispatchPayload.model_validate(payload_data)
+            return model_type.model_validate(payload_data)
         except ValidationError as exc:
             raise DispatchVerificationError(
-                "Dispatch payload shape is invalid",
+                f"{payload_name} shape is invalid",
                 status_code=400,
             ) from exc
 
-        if header_processor != payload.processor_id or payload.processor_id != self.processor_id:
-            raise DispatchVerificationError("Processor id mismatch")
-        if header_run != payload.run_id:
-            raise DispatchVerificationError("Run id mismatch")
-
+    def _accept(self, timestamp: str, nonce: str) -> None:
         self._verify_timestamp(timestamp)
         self.nonce_store.check_and_store(nonce)
-
-        return payload
 
     def _verify_timestamp(self, raw_timestamp: str) -> None:
         try:

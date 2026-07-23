@@ -106,7 +106,9 @@ every attempt. The defaults are four attempts with exponential backoff and jitte
 processors can tune `result_max_attempts`, `result_retry_backoff`, and
 `result_retry_max_backoff` on `ActionClient` or `ActionClient.from_dispatch(...)`.
 
-The FastAPI adapter always exposes `/dispatch` and `/health`. Set
+The FastAPI adapter always exposes `/dispatch`, `/preflight`, and `/health`.
+`/preflight` accepts only a valid signed LAREX request and reports the processor
+identity, protocol version, and configured capabilities. Set
 `LAREX_ACTION_ROUTE_PREFIXES` to also expose prefixed routes when a reverse
 proxy keeps an external path prefix:
 
@@ -115,9 +117,21 @@ LAREX_ACTION_ROUTE_PREFIXES=/kraken,/ocr
 ```
 
 With that setting, the same processor also accepts `/kraken/dispatch`,
-`/kraken/health`, `/ocr/dispatch`, and `/ocr/health`. LAREX must sign and call
-the same path the processor receives; do not strip the prefix in the reverse
-proxy before the request reaches the processor.
+`/kraken/preflight`, `/kraken/health`, and the equivalent `/ocr/*` routes. LAREX
+must sign and call the same path the processor receives; do not strip the prefix
+in the reverse proxy before the request reaches the processor.
+
+Capabilities default to both SDK-supported result features. Override them when a
+processor intentionally implements a smaller surface:
+
+```python
+app = create_larex_action_app(
+    processor_id="my-processor",
+    dispatch_secret=secret,
+    handler=process,
+    processor_capabilities={"incrementalPageResults": True, "customFileResults": False},
+)
+```
 
 ## Target-Aware Runs
 

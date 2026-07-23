@@ -4,11 +4,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 
 from .client import ActionClient, ActionContext
 from .exceptions import ActionCancelled, DispatchVerificationError
-from .models import ActionDispatchPayload
+from .models import ActionCapabilities, ActionDispatchPayload, PreflightResponse
 from .nonce import NonceStore
 from .verifier import DispatchVerifier
 
@@ -41,6 +41,7 @@ def create_larex_action_app(
     route_prefixes: Iterable[str] | None = None,
     route_prefixes_env: str = "LAREX_ACTION_ROUTE_PREFIXES",
     max_concurrent_runs: int | None = None,
+    processor_capabilities: ActionCapabilities | Mapping[str, bool] | None = None,
 ) -> FastAPI:
     if max_dispatch_body_bytes <= 0:
         raise ValueError("max_dispatch_body_bytes must be positive")
@@ -61,6 +62,7 @@ def create_larex_action_app(
         allowed_callback_origins_env,
     )
     resolved_route_prefixes = _resolve_route_prefixes(route_prefixes, route_prefixes_env)
+    resolved_capabilities = _resolve_processor_capabilities(processor_capabilities)
     fastapi_app = app or FastAPI(title=f"LAREX Action Processor: {processor_id}")
     run_semaphore = asyncio.Semaphore(max_concurrent_runs) if max_concurrent_runs else None
 
@@ -75,13 +77,7 @@ def create_larex_action_app(
 
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
         body = await _read_limited_body(request, max_dispatch_body_bytes)
-        raw_path = request.scope.get("raw_path")
-        if isinstance(raw_path, bytes):
-            path_and_query = raw_path.decode("ascii", errors="surrogateescape")
-        else:
-            path_and_query = request.url.path
-        if request.url.query:
-            path_and_query += f"?{request.url.query}"
+        path_and_query = _request_path_and_query(request)
         try:
             payload = verifier.verify(
                 method=request.method,
@@ -104,9 +100,28 @@ def create_larex_action_app(
         )
         return {"status": "accepted", "runId": payload.run_id}
 
+    async def preflight(request: Request) -> dict[str, object]:
+        body = await _read_limited_body(request, max_dispatch_body_bytes)
+        path_and_query = _request_path_and_query(request)
+        try:
+            payload = verifier.verify_preflight(
+                method=request.method,
+                path_and_query=path_and_query,
+                headers=request.headers,
+                body=body,
+            )
+        except DispatchVerificationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return PreflightResponse(
+            requestId=payload.request_id,
+            processorId=processor_id,
+            capabilities=resolved_capabilities,
+        ).model_dump(by_alias=True)
+
     for prefix in resolved_route_prefixes:
         fastapi_app.add_api_route(f"{prefix}/health", health, methods=["GET"])
         fastapi_app.add_api_route(f"{prefix}/ready", readiness, methods=["GET"])
+        fastapi_app.add_api_route(f"{prefix}/preflight", preflight, methods=["POST"])
         fastapi_app.add_api_route(f"{prefix}/dispatch", dispatch, methods=["POST"])
 
     return fastapi_app
@@ -129,6 +144,30 @@ async def _read_limited_body(request: Request, max_bytes: int) -> bytes:
             raise HTTPException(status_code=413, detail="Dispatch body is too large")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _request_path_and_query(request: Request) -> str:
+    raw_path = request.scope.get("raw_path")
+    if isinstance(raw_path, bytes):
+        path_and_query = raw_path.decode("ascii", errors="surrogateescape")
+    else:
+        path_and_query = request.url.path
+    if request.url.query:
+        path_and_query += f"?{request.url.query}"
+    return path_and_query
+
+
+def _resolve_processor_capabilities(
+    capabilities: ActionCapabilities | Mapping[str, bool] | None,
+) -> ActionCapabilities:
+    if capabilities is None:
+        return ActionCapabilities(
+            incrementalPageResults=True,
+            customFileResults=True,
+        )
+    if isinstance(capabilities, ActionCapabilities):
+        return capabilities
+    return ActionCapabilities.model_validate(capabilities)
 
 
 async def _run_handler(

@@ -9,7 +9,7 @@ import pytest
 from larex_actions import ActionClient, ActionContext
 from larex_actions.fastapi import create_larex_action_app
 
-from .conftest import PROCESSOR_ID, SECRET, signed_dispatch
+from .conftest import PROCESSOR_ID, SECRET, signed_dispatch, signed_preflight
 
 
 @pytest.mark.asyncio
@@ -35,6 +35,59 @@ async def test_fastapi_adapter_accepts_dispatch_and_runs_handler() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "runId": "run-1"}
     assert calls == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_accepts_authenticated_preflight() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("preflight must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+    )
+    body, headers = signed_preflight()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/preflight", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "protocolVersion": 1,
+        "requestId": "preflight-1",
+        "processorId": PROCESSOR_ID,
+        "capabilities": {
+            "incrementalPageResults": True,
+            "customFileResults": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_rejects_preflight_with_wrong_secret() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("preflight must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+    )
+    body, headers = signed_preflight(secret="wrong-secret")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/preflight", content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Dispatch signature mismatch"}
 
 
 @pytest.mark.asyncio
@@ -83,6 +136,9 @@ async def test_fastapi_adapter_accepts_prefixed_dispatch_route() -> None:
         route_prefixes=["/kraken"],
     )
     body, headers = signed_dispatch(path_and_query="/kraken/dispatch")
+    preflight_body, preflight_headers = signed_preflight(
+        path_and_query="/kraken/preflight"
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -90,11 +146,17 @@ async def test_fastapi_adapter_accepts_prefixed_dispatch_route() -> None:
     ) as client:
         response = await client.post("/kraken/dispatch", content=body, headers=headers)
         health_response = await client.get("/kraken/health")
+        preflight_response = await client.post(
+            "/kraken/preflight",
+            content=preflight_body,
+            headers=preflight_headers,
+        )
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "runId": "run-1"}
     assert health_response.status_code == 200
     assert health_response.json() == {"status": "ok"}
+    assert preflight_response.status_code == 200
     assert calls == ["run-1"]
 
 
