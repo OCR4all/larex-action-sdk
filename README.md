@@ -105,6 +105,9 @@ Result callbacks retry connection failures and transient HTTP responses (`408`,
 every attempt. The defaults are four attempts with exponential backoff and jitter;
 processors can tune `result_max_attempts`, `result_retry_backoff`, and
 `result_retry_max_backoff` on `ActionClient` or `ActionClient.from_dispatch(...)`.
+If LAREX rejects a result, `ResultSubmissionError` includes a bounded, sanitized
+response detail in its message so processor logs show the actual import or
+validation failure. It remains an `httpx.HTTPStatusError` subtype for compatibility.
 
 The FastAPI adapter always exposes `/dispatch`, `/preflight`, and `/health`.
 `/preflight` accepts only a valid signed LAREX request and reports the processor

@@ -6,6 +6,7 @@ from .exceptions import (
     DispatchVerificationError,
     IncrementalResultsUnsupported,
     LarexActionError,
+    ResultSubmissionError,
 )
 from .models import (
     PROTOCOL_VERSION,
@@ -62,6 +63,7 @@ __all__ = [
     "ResultFile",
     "ResultManifest",
     "ResultStatus",
+    "ResultSubmissionError",
     "RunStatus",
     "TargetSelectionPage",
 ]

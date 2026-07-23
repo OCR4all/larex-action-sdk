@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import os
 import random
+import re
 from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from .exceptions import (
     ActionUrlSecurityError,
     CustomFileResultsUnsupported,
     IncrementalResultsUnsupported,
+    ResultSubmissionError,
 )
 from .models import (
     ActionCapabilities,
@@ -354,7 +357,7 @@ class ActionClient:
                 ):
                     await asyncio.sleep(self._result_retry_delay(attempt, response))
                     continue
-                response.raise_for_status()
+                _raise_for_result_status(response)
                 data = response.json()
                 return data if isinstance(data, Mapping) else {"response": data}
             except httpx.TransportError:
@@ -662,6 +665,60 @@ def _normalize_origin(origin: str) -> str:
 
 def _is_retryable_result_status(status_code: int) -> bool:
     return status_code in {408, 429, 502, 503, 504}
+
+
+_RESULT_ERROR_BODY_LIMIT = 2_048
+_BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")
+
+
+def _raise_for_result_status(response: httpx.Response) -> None:
+    if response.is_success:
+        return
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_result_error_detail(response)
+        message = (
+            "LAREX rejected the Action result callback with HTTP "
+            f"{response.status_code} {response.reason_phrase}"
+        )
+        if detail:
+            message += f": {detail}"
+        raise ResultSubmissionError(
+            message,
+            request=response.request,
+            response=response,
+        ) from exc
+
+
+def _safe_result_error_detail(response: httpx.Response) -> str:
+    if not response.content:
+        return ""
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and "json" not in content_type and not content_type.startswith("text/"):
+        media_type = content_type.split(";", 1)[0]
+        return f"{len(response.content)}-byte {media_type} response"
+    text = response.text
+    if "json" in content_type:
+        try:
+            payload = response.json()
+            if isinstance(payload, Mapping):
+                for field in ("detail", "message", "error"):
+                    value = payload.get(field)
+                    if value is not None:
+                        text = (
+                            value
+                            if isinstance(value, str)
+                            else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                        )
+                        break
+        except (ValueError, TypeError):
+            pass
+    text = " ".join(text.split())
+    text = _BEARER_TOKEN_PATTERN.sub(r"\1[REDACTED]", text)
+    if len(text) > _RESULT_ERROR_BODY_LIMIT:
+        return text[:_RESULT_ERROR_BODY_LIMIT] + "…"
+    return text
 
 
 def _origin(parsed: SplitResult) -> str:

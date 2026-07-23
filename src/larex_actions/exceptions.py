@@ -1,3 +1,6 @@
+import httpx
+
+
 class LarexActionError(Exception):
     """Base exception raised by the LAREX Action SDK."""
 
@@ -24,3 +27,7 @@ class IncrementalResultsUnsupported(LarexActionError):
 
 class CustomFileResultsUnsupported(LarexActionError):
     """Raised when a processor returns custom files to an older LAREX server."""
+
+
+class ResultSubmissionError(httpx.HTTPStatusError, LarexActionError):
+    """Raised when LAREX rejects a result callback with a non-success response."""

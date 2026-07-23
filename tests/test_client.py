@@ -18,6 +18,7 @@ from larex_actions import (
     CustomFileResultsUnsupported,
     IncrementalResultsUnsupported,
     ResultBuilder,
+    ResultSubmissionError,
 )
 
 from .conftest import dispatch_payload
@@ -188,14 +189,49 @@ async def test_result_submission_does_not_retry_client_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        return httpx.Response(400, request=request)
+        return httpx.Response(
+            400,
+            request=request,
+            json={
+                "message": "Missing result file part: file_22",
+                "debug": "Bearer internal-token-must-not-be-logged",
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(
+            ResultSubmissionError,
+            match=r"HTTP 400 Bad Request.*Missing result file part: file_22",
+        ) as caught:
             await client.complete()
 
     assert attempts == 1
+    assert "internal-token-must-not-be-logged" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_result_submission_error_is_bounded_and_redacts_bearer_tokens() -> None:
+    response_text = "Bearer secret-token " + ("x" * 3_000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            request=request,
+            headers={"Content-Type": "text/plain"},
+            text=response_text,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(ResultSubmissionError) as caught:
+            await client.complete()
+
+    message = str(caught.value)
+    assert "secret-token" not in message
+    assert "Bearer [REDACTED]" in message
+    assert message.endswith("…")
+    assert len(message) < 2_200
 
 
 @pytest.mark.asyncio
