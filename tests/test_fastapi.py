@@ -136,9 +136,7 @@ async def test_fastapi_adapter_accepts_prefixed_dispatch_route() -> None:
         route_prefixes=["/kraken"],
     )
     body, headers = signed_dispatch(path_and_query="/kraken/dispatch")
-    preflight_body, preflight_headers = signed_preflight(
-        path_and_query="/kraken/preflight"
-    )
+    preflight_body, preflight_headers = signed_preflight(path_and_query="/kraken/preflight")
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
