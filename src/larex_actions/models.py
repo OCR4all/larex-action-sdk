@@ -8,6 +8,7 @@ RunStatus = Literal["running", "failed", "cancelled"]
 ResultStatus = Literal["running", "completed", "failed"]
 FileType = Literal["image", "xml", "file"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
+InputLevel = Literal["NONE", "OPTIONAL", "REQUIRED"]
 PROTOCOL_VERSION = 1
 
 
@@ -24,6 +25,21 @@ class TargetSelectionPage(LarexModel):
 class ActionTargetSelection(LarexModel):
     type: ActionTarget = "PAGE"
     pages: list[TargetSelectionPage] = Field(default_factory=list)
+
+
+class InputRequirement(LarexModel):
+    level: InputLevel = "NONE"
+    required_for_targets: list[ActionTarget] = Field(
+        default_factory=list, alias="requiredForTargets"
+    )
+
+    def level_for(self, target: ActionTarget) -> InputLevel:
+        return "REQUIRED" if target in self.required_for_targets else self.level
+
+
+class InputRequirements(LarexModel):
+    images: InputRequirement = Field(default_factory=InputRequirement)
+    xml: InputRequirement = Field(default_factory=InputRequirement)
 
 
 class ActionCapabilities(LarexModel):
@@ -54,6 +70,9 @@ class ActionDispatchPayload(LarexModel):
     project_id: str = Field(alias="projectId")
     page_ids: list[str] = Field(alias="pageIds", default_factory=list)
     target_selection: ActionTargetSelection | None = Field(default=None, alias="targetSelection")
+    input_requirements: InputRequirements = Field(
+        default_factory=InputRequirements, alias="inputRequirements"
+    )
     parameters: dict[str, Any] = Field(default_factory=dict)
     secret: SecretStr
     pull_url: str = Field(alias="pullUrl")
@@ -95,6 +114,9 @@ class ActionInput(LarexModel):
     pages: list[ActionPage] = Field(default_factory=list)
     target_selection: ActionInputTargetSelection | None = Field(
         default=None, alias="targetSelection"
+    )
+    input_requirements: InputRequirements = Field(
+        default_factory=InputRequirements, alias="inputRequirements"
     )
     capabilities: ActionCapabilities = Field(default_factory=ActionCapabilities)
     cancel_requested: bool = Field(default=False, alias="cancelRequested")

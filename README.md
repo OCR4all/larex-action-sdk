@@ -152,6 +152,24 @@ Target metadata contains selected region/textline ids only. LAREX sends full pag
 images/XML and lets processors resolve geometry from PAGE XML, including whether
 to crop, mask, pad, deskew, or process the full image.
 
+Input definitions can declare whether each file type is unavailable, optional,
+or required, including target-specific requirements:
+
+```yaml
+inputs:
+  images:
+    level: required
+  xml:
+    level: optional
+    requiredForTargets:
+      - REGION
+```
+
+LAREX resolves that contract for the selected target and exposes it on both
+`ctx.payload.input_requirements` and `action_input.input_requirements`. Legacy
+boolean definitions remain compatible (`true` is optional and `false` is none).
+Pages missing a required input are excluded before dispatch.
+
 Processors return normal PAGE XML via `ResultBuilder.add_xml_bytes(...)` or
 `add_xml_path(...)`. For region or textline targeted runs, LAREX imports only the
 selected target scope from the returned PAGE XML.
