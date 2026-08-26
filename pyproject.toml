@@ -70,3 +70,16 @@ typeCheckingMode = "strict"
 reportUnknownMemberType = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
+
+[tool.semantic_release]
+build_command = """
+python -m pip install --disable-pip-version-check \"uv>=0.8,<1\"
+uv lock --upgrade-package \"$PACKAGE_NAME\"
+git add uv.lock
+uv build
+"""
+commit_message = "chore(release): {version}"
+allow_zero_version = true
+major_on_zero = false
+tag_format = "v{version}"
+version_toml = ["pyproject.toml:project.version"]

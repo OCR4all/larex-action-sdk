@@ -228,12 +228,15 @@ uv run pytest
 uv build
 ```
 
-To prepare and publish a release from a clean `main` checkout, run
-`./scripts/release.sh 0.13.0`. The helper updates `pyproject.toml` and
-`uv.lock`, runs the checks above, creates a conventional release commit, pushes
-the `v0.13.0` tag, and creates the GitHub release. Release candidate versions
-such as `0.13.0rc1` are published to TestPyPI by the tag workflow.
+Releases are automated by the `python-semantic-release` workflow. Conventional
+commits on `main` determine the next version (`feat` → minor, `fix`/`perf` →
+patch, and breaking changes → major). The workflow verifies the package, updates
+`pyproject.toml` and `uv.lock`, creates the release commit/tag and GitHub release.
+Run it manually from the Actions tab when you need to force a bump level or
+create a prerelease.
 
-Releases are published with PyPI Trusted Publishing from GitHub Actions. Release
-candidate tags containing `rc` publish to TestPyPI; published GitHub releases
-publish to PyPI.
+Configure a repository secret named `RELEASE_TOKEN` with a GitHub token that has
+Contents read/write access. A PAT is required so the generated
+tag/release triggers the existing PyPI publication workflow. Release candidate
+tags containing `rc` publish to TestPyPI; published stable releases publish to
+PyPI.

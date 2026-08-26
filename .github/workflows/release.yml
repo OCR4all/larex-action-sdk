@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Override the release level"
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+      prerelease:
+        description: "Publish the calculated version as a prerelease"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: ${{ github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Verify package
+        run: |
+          uv sync --locked --all-extras
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run pyright
+          uv run pytest
+          uv build
+
+  release:
+    if: ${{ github.ref_name == 'main' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository at workflow revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Reset branch to workflow revision
+        run: git reset --hard "${GITHUB_SHA}"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Run python-semantic-release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          FORCE_LEVEL: ${{ inputs.force || 'auto' }}
+          AS_PRERELEASE: ${{ inputs.prerelease || false }}
+        run: |
+          release_args=(version)
+          if [[ "$FORCE_LEVEL" != "auto" ]]; then
+            release_args+=("--${FORCE_LEVEL}")
+          fi
+          if [[ "$AS_PRERELEASE" == "true" ]]; then
+            release_args+=(--as-prerelease)
+          fi
+          # PSR 10.6.1 is incompatible with GitPython 3.1.60+.
+          uvx --from python-semantic-release==10.6.1 \
+            --with 'gitpython<3.1.60' \
+            semantic-release -v "${release_args[@]}"
