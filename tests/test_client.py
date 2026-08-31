@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -180,6 +181,179 @@ async def test_result_submission_retries_and_reopens_path_files(tmp_path: Path) 
 
     assert len(request_bodies) == 2
     assert all(b"<PcGts/>" in body for body in request_bodies)
+
+
+@pytest.mark.asyncio
+async def test_transport_debug_logging_covers_sdk_operations(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    heartbeat_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/input"):
+            return httpx.Response(
+                200,
+                json={
+                    "protocolVersion": 1,
+                    "runId": "run-1",
+                    "processorKey": "logging-test",
+                    "projectId": "project-1",
+                    "parameters": {},
+                    "pages": [
+                        {
+                            "id": "page-1",
+                            "name": "001",
+                            "images": [],
+                            "xml": [
+                                {
+                                    "id": "xml-1",
+                                    "fileName": "001.xml",
+                                    "mimeType": "application/xml",
+                                    "downloadUrl": "https://larex.example/file/xml-1",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+        if request.url.path.endswith("/heartbeat"):
+            heartbeat_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json={"cancelRequested": False})
+        if request.url.path == "/file/xml-1":
+            return httpx.Response(200, content=b"<PcGts/>")
+        if request.url.path.endswith("/results"):
+            return httpx.Response(200, json={"status": "ok"})
+        raise AssertionError(f"Unexpected request path: {request.url.path}")
+
+    payload = dispatch_payload_model(capabilities={"incrementalPageResults": True})
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "result.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        with caplog.at_level(logging.DEBUG, logger="larex_actions.transport"):
+            action_input = await client.pull_input()
+            await client.heartbeat(25, "Working")
+            await client.download_bytes(action_input.pages[0].xml[0])
+            await client.download_to_path(action_input.pages[0].xml[0], tmp_path / "download.xml")
+            await client.submit_page_results("page-1", results)
+            await client.complete()
+            await client.fail("Failed intentionally")
+
+    messages = [
+        record.getMessage() for record in caplog.records if record.name == "larex_actions.transport"
+    ]
+    joined = "\n".join(messages)
+    for operation in (
+        "pull_input",
+        "heartbeat",
+        "download_bytes",
+        "download_to_path",
+        "submit_page_results",
+        "complete",
+        "fail",
+    ):
+        assert f'operation="{operation}"' in joined
+    assert 'run_id="run-1"' in joined
+    assert 'page_id="page-1"' in joined
+    assert 'result_status="running"' in joined
+    assert 'result_status="completed"' in joined
+    assert 'result_status="failed"' in joined
+    assert "result_file_count=1" in joined
+    assert 'result_file_types="xml:1"' in joined
+    assert "http_status=200" in joined
+    assert "attempt=1" in joined
+    assert "duration_ms=" in joined
+    assert all("log" not in payload for payload in heartbeat_payloads)
+    assert "LAREX SDK transport" not in "\n".join(map(str, heartbeat_payloads))
+
+
+@pytest.mark.asyncio
+async def test_transport_logging_reports_retries_and_redacts_request_data(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempts = 0
+    authorization_secret = "authorization-secret-must-not-appear"
+    result_body_secret = b"page-xml-body-must-not-appear"
+    result_message_secret = "result-message-must-not-appear"
+    response_body_secret = "response-body-must-not-appear"
+    sensitive_query = "signed-query-must-not-appear"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"})
+        return httpx.Response(
+            400,
+            request=request,
+            json={"message": response_body_secret},
+        )
+
+    payload = dispatch_payload_model(
+        secret=authorization_secret,
+        resultUrl=f"https://larex.example/results?signature={sensitive_query}",
+    )
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", result_body_secret, "secret.xml")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload,
+            client=http_client,
+            result_retry_backoff=0,
+        )
+        with (
+            caplog.at_level(logging.DEBUG, logger="larex_actions.transport"),
+            pytest.raises(ResultSubmissionError),
+        ):
+            await client.complete(results, result_message_secret)
+
+    messages = [
+        record.getMessage() for record in caplog.records if record.name == "larex_actions.transport"
+    ]
+    joined = "\n".join(messages)
+    assert 'operation="complete" event="retry"' in joined
+    assert "attempt=1" in joined
+    assert "http_status=503" in joined
+    assert 'operation="complete" event="failed"' in joined
+    assert "attempt=2" in joined
+    assert "http_status=400" in joined
+    assert 'error_type="ResultSubmissionError"' in joined
+    assert "https://larex.example" not in joined
+    for secret in (
+        authorization_secret,
+        result_body_secret.decode(),
+        result_message_secret,
+        response_body_secret,
+        sensitive_query,
+    ):
+        assert secret not in joined
+
+
+@pytest.mark.asyncio
+async def test_transport_logging_does_not_include_transport_exception_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    exception_secret = "transport-exception-secret-must-not-appear"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(exception_secret, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with (
+            caplog.at_level(logging.DEBUG, logger="larex_actions.transport"),
+            pytest.raises(httpx.ConnectError),
+        ):
+            await client.pull_input()
+
+    joined = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == "larex_actions.transport"
+    )
+    assert 'operation="pull_input" event="failed"' in joined
+    assert 'error_type="ConnectError"' in joined
+    assert exception_secret not in joined
 
 
 @pytest.mark.asyncio

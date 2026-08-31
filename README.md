@@ -109,6 +109,49 @@ If LAREX rejects a result, `ResultSubmissionError` includes a bounded, sanitized
 response detail in its message so processor logs show the actual import or
 validation failure. It remains an `httpx.HTTPStatusError` subtype for compatibility.
 
+## SDK Transport Logging
+
+The SDK uses Python's standard `logging` module for optional transport diagnostics.
+Records are emitted at `DEBUG` on the `larex_actions.transport` logger, so normal
+processor output remains unchanged until the application enables that logger. The
+library does not configure the root logger or install handlers.
+
+When the processor already configures a root handler, including many application
+logging setups, enabling the named logger is enough:
+
+```python
+import logging
+
+logging.getLogger("larex_actions.transport").setLevel(logging.DEBUG)
+```
+
+For a Uvicorn or Docker process where the root logger has no handler, attach a
+standard stream handler in the processor's own startup code. `StreamHandler` writes
+to stderr by default, which Docker and normal process supervisors collect alongside
+stdout:
+
+```python
+import logging
+
+sdk_transport_logger = logging.getLogger("larex_actions.transport")
+sdk_transport_logger.setLevel(logging.DEBUG)
+sdk_transport_logger.addHandler(logging.StreamHandler())
+sdk_transport_logger.propagate = False
+```
+
+Transport records identify operations such as input pulls, heartbeats, downloads,
+page-result submissions, completion uploads, retries, and failures. They include
+safe metadata when available—for example run/page IDs, result status and file type
+counts, HTTP status, duration, and retry attempt. They never include authorization
+headers, request or response bodies, file contents, or callback/download URLs.
+
+This is local SDK transport logging only. Enabling it does not send extra `log=`
+heartbeats or otherwise add requests to LAREX. It can show when an SDK call
+succeeds, fails, or is retried, but it cannot determine what an Action does
+internally between calls. Use Action-specific application logging for semantic
+progress, or call `ctx.heartbeat(...)`/`ctx.log(...)` when that progress should
+also be reported to LAREX.
+
 The FastAPI adapter always exposes `/dispatch`, `/preflight`, and `/health`.
 `/preflight` accepts only a valid signed LAREX request and reports the processor
 identity, protocol version, and configured capabilities. Set
