@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import random
 import re
+import time
+from collections import Counter
 from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -29,12 +32,15 @@ from .models import (
     ActionFile,
     ActionInput,
     HeartbeatResponse,
+    ResultFile,
     ResultStatus,
     RunStatus,
 )
 from .results import ResultBuilder
 
 ParameterModelT = TypeVar("ParameterModelT", bound=BaseModel)
+
+transport_logger = logging.getLogger("larex_actions.transport")
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,7 @@ class ActionClient:
         result_max_attempts: int = 4,
         result_retry_backoff: float = 0.5,
         result_retry_max_backoff: float = 8.0,
+        run_id: str | None = None,
     ) -> None:
         self._trusted_origin = _validate_callback_urls(
             pull_url=pull_url,
@@ -92,6 +99,8 @@ class ActionClient:
         self._result_max_attempts = result_max_attempts
         self._result_retry_backoff = result_retry_backoff
         self._result_retry_max_backoff = result_retry_max_backoff
+        self._run_id = run_id
+        self._file_page_ids: dict[str, str] = {}
 
     @classmethod
     def from_dispatch(
@@ -122,6 +131,7 @@ class ActionClient:
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
+            run_id=payload.run_id,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -135,9 +145,20 @@ class ActionClient:
             await self._client.aclose()
 
     async def pull_input(self) -> ActionInput:
-        response = await self._client.get(self.pull_url, headers=self._auth_headers())
-        response.raise_for_status()
-        action_input = ActionInput.model_validate(response.json())
+        started = time.perf_counter()
+        response: httpx.Response | None = None
+        try:
+            received_response = await self._client.get(self.pull_url, headers=self._auth_headers())
+            response = received_response
+            received_response.raise_for_status()
+            action_input = ActionInput.model_validate(received_response.json())
+        except Exception as exc:
+            self._log_transport_failure("pull_input", started, response, exc)
+            raise
+        self._run_id = self._run_id or action_input.run_id
+        self._file_page_ids.update(
+            (file.id, page.id) for page in action_input.pages for file in (*page.images, *page.xml)
+        )
         self._supports_incremental_page_results = (
             self._supports_incremental_page_results
             or action_input.capabilities.incremental_page_results
@@ -146,6 +167,13 @@ class ActionClient:
             self._supports_custom_file_results or action_input.capabilities.custom_file_results
         )
         self._cancel_requested = self._cancel_requested or action_input.cancel_requested
+        assert response is not None
+        self._log_transport(
+            "pull_input",
+            "completed",
+            started=started,
+            http_status=response.status_code,
+        )
         return action_input
 
     async def heartbeat(
@@ -167,6 +195,7 @@ class ActionClient:
             log=log,
             status=status,
             error_message=error_message,
+            operation="fail" if status == "failed" else "heartbeat",
         )
         if status == "cancelled":
             self._cancel_requested = True
@@ -191,6 +220,7 @@ class ActionClient:
             status="cancelled",
             status_message=status_message,
             log=log,
+            operation="cancelled",
         )
         self._cancel_requested = True
         self._cancelled_reported = True
@@ -204,6 +234,7 @@ class ActionClient:
         log: str | None = None,
         status: RunStatus = "running",
         error_message: str | None = None,
+        operation: str = "heartbeat",
     ) -> HeartbeatResponse:
         payload: dict[str, Any] = {
             "status": status,
@@ -212,33 +243,112 @@ class ActionClient:
             "log": log,
             "errorMessage": error_message,
         }
-        response = await self._client.post(
-            self.heartbeat_url,
-            headers=self._auth_headers(),
-            json={key: value for key, value in payload.items() if value is not None},
+        started = time.perf_counter()
+        response: httpx.Response | None = None
+        try:
+            received_response = await self._client.post(
+                self.heartbeat_url,
+                headers=self._auth_headers(),
+                json={key: value for key, value in payload.items() if value is not None},
+            )
+            response = received_response
+            received_response.raise_for_status()
+            heartbeat = HeartbeatResponse.model_validate(received_response.json())
+        except Exception as exc:
+            self._log_transport_failure(
+                operation,
+                started,
+                response,
+                exc,
+                result_status=status,
+            )
+            raise
+        assert response is not None
+        self._log_transport(
+            operation,
+            "completed",
+            started=started,
+            http_status=response.status_code,
+            result_status=status,
         )
-        response.raise_for_status()
-        return HeartbeatResponse.model_validate(response.json())
+        return heartbeat
 
     async def download_bytes(self, file: ActionFile) -> bytes:
-        self._validate_download_url(file.download_url)
-        response = await self._client.get(file.download_url, headers=self._auth_headers())
-        response.raise_for_status()
-        return response.content
+        started = time.perf_counter()
+        response: httpx.Response | None = None
+        try:
+            self._validate_download_url(file.download_url)
+            received_response = await self._client.get(
+                file.download_url, headers=self._auth_headers()
+            )
+            response = received_response
+            received_response.raise_for_status()
+            content = received_response.content
+        except Exception as exc:
+            self._log_transport_failure(
+                "download_bytes",
+                started,
+                response,
+                exc,
+                page_id=self._file_page_ids.get(file.id),
+                file_id=file.id,
+                file_type=_download_file_type(file),
+            )
+            raise
+        assert response is not None
+        self._log_transport(
+            "download_bytes",
+            "completed",
+            started=started,
+            http_status=response.status_code,
+            page_id=self._file_page_ids.get(file.id),
+            file_id=file.id,
+            file_type=_download_file_type(file),
+            byte_count=len(content),
+        )
+        return content
 
     async def download_to_path(self, file: ActionFile, path: str | Path) -> Path:
-        self._validate_download_url(file.download_url)
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        async with self._client.stream(
-            "GET",
-            file.download_url,
-            headers=self._auth_headers(),
-        ) as response:
-            response.raise_for_status()
-            with target.open("wb") as output:
-                async for chunk in response.aiter_bytes():
-                    output.write(chunk)
+        started = time.perf_counter()
+        response: httpx.Response | None = None
+        byte_count = 0
+        try:
+            self._validate_download_url(file.download_url)
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            async with self._client.stream(
+                "GET",
+                file.download_url,
+                headers=self._auth_headers(),
+            ) as received_response:
+                response = received_response
+                received_response.raise_for_status()
+                with target.open("wb") as output:
+                    async for chunk in received_response.aiter_bytes():
+                        output.write(chunk)
+                        byte_count += len(chunk)
+        except Exception as exc:
+            self._log_transport_failure(
+                "download_to_path",
+                started,
+                response,
+                exc,
+                page_id=self._file_page_ids.get(file.id),
+                file_id=file.id,
+                file_type=_download_file_type(file),
+            )
+            raise
+        assert response is not None
+        self._log_transport(
+            "download_to_path",
+            "completed",
+            started=started,
+            http_status=response.status_code,
+            page_id=self._file_page_ids.get(file.id),
+            file_id=file.id,
+            file_type=_download_file_type(file),
+            byte_count=byte_count,
+        )
         return target
 
     async def complete(
@@ -250,7 +360,11 @@ class ActionClient:
         if self._incremental_submission_started and results is not None and results.files:
             raise ValueError("Incremental runs must be completed without bulk result files")
         return await self._post_results(
-            results or ResultBuilder(), status="completed", message=message, page_id=None
+            results or ResultBuilder(),
+            operation="complete",
+            status="completed",
+            message=message,
+            page_id=None,
         )
 
     async def submit_page_results(
@@ -271,6 +385,7 @@ class ActionClient:
             raise ValueError("Every incremental result file must match page_id")
         response = await self._post_results(
             results,
+            operation="submit_page_results",
             status="running",
             message=message,
             page_id=page_id,
@@ -290,7 +405,13 @@ class ActionClient:
             raise ValueError("Use submit_page_results for running incremental results")
         if self._incremental_submission_started and results.files:
             raise ValueError("Incremental runs cannot upload bulk result files")
-        return await self._post_results(results, status=status, message=message, page_id=None)
+        return await self._post_results(
+            results,
+            operation="upload_results",
+            status=status,
+            message=message,
+            page_id=None,
+        )
 
     async def fail(
         self,
@@ -327,17 +448,21 @@ class ActionClient:
         self,
         results: ResultBuilder,
         *,
+        operation: str,
         status: ResultStatus,
         message: str | None,
         page_id: str | None,
     ) -> Mapping[str, Any]:
-        if any(file.type == "file" for file in results.files) and not (
+        result_files = results.files
+        if any(file.type == "file" for file in result_files) and not (
             self._supports_custom_file_results
         ):
             raise CustomFileResultsUnsupported(
                 "This LAREX server did not advertise customFileResults support"
             )
+        file_types = _result_file_types(result_files)
         for attempt in range(1, self._result_max_attempts + 1):
+            started = time.perf_counter()
             response: httpx.Response | None = None
             try:
                 with ExitStack() as exit_stack:
@@ -351,20 +476,147 @@ class ActionClient:
                             exit_stack=exit_stack,
                         ),
                     )
-                if (
-                    _is_retryable_result_status(response.status_code)
-                    and attempt < self._result_max_attempts
-                ):
-                    await asyncio.sleep(self._result_retry_delay(attempt, response))
-                    continue
-                _raise_for_result_status(response)
-                data = response.json()
-                return data if isinstance(data, Mapping) else {"response": data}
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
                 if attempt >= self._result_max_attempts:
+                    self._log_transport_failure(
+                        operation,
+                        started,
+                        response,
+                        exc,
+                        page_id=page_id,
+                        result_status=status,
+                        result_file_count=len(result_files),
+                        result_file_types=file_types,
+                        attempt=attempt,
+                    )
                     raise
-                await asyncio.sleep(self._result_retry_delay(attempt, response))
+                retry_delay = self._result_retry_delay(attempt, response)
+                self._log_transport(
+                    operation,
+                    "retry",
+                    started=started,
+                    page_id=page_id,
+                    result_status=status,
+                    result_file_count=len(result_files),
+                    result_file_types=file_types,
+                    attempt=attempt,
+                    error_type=type(exc).__name__,
+                    retry_delay_seconds=retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            except Exception as exc:
+                self._log_transport_failure(
+                    operation,
+                    started,
+                    response,
+                    exc,
+                    page_id=page_id,
+                    result_status=status,
+                    result_file_count=len(result_files),
+                    result_file_types=file_types,
+                    attempt=attempt,
+                )
+                raise
+
+            assert response is not None
+            received_response = response
+            if (
+                _is_retryable_result_status(received_response.status_code)
+                and attempt < self._result_max_attempts
+            ):
+                retry_delay = self._result_retry_delay(attempt, received_response)
+                self._log_transport(
+                    operation,
+                    "retry",
+                    started=started,
+                    http_status=received_response.status_code,
+                    page_id=page_id,
+                    result_status=status,
+                    result_file_count=len(result_files),
+                    result_file_types=file_types,
+                    attempt=attempt,
+                    retry_delay_seconds=retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+
+            try:
+                _raise_for_result_status(received_response)
+                data = received_response.json()
+            except Exception as exc:
+                self._log_transport_failure(
+                    operation,
+                    started,
+                    received_response,
+                    exc,
+                    page_id=page_id,
+                    result_status=status,
+                    result_file_count=len(result_files),
+                    result_file_types=file_types,
+                    attempt=attempt,
+                )
+                raise
+            self._log_transport(
+                operation,
+                "completed",
+                started=started,
+                http_status=received_response.status_code,
+                page_id=page_id,
+                result_status=status,
+                result_file_count=len(result_files),
+                result_file_types=file_types,
+                attempt=attempt,
+            )
+            return data if isinstance(data, Mapping) else {"response": data}
         raise RuntimeError("Result submission retry loop exited unexpectedly")
+
+    def _log_transport_failure(
+        self,
+        operation: str,
+        started: float,
+        response: httpx.Response | None,
+        error: Exception,
+        **metadata: object,
+    ) -> None:
+        self._log_transport(
+            operation,
+            "failed",
+            started=started,
+            http_status=response.status_code if response is not None else None,
+            error_type=type(error).__name__,
+            **metadata,
+        )
+
+    def _log_transport(
+        self,
+        operation: str,
+        event: str,
+        *,
+        started: float,
+        http_status: int | None = None,
+        **metadata: object,
+    ) -> None:
+        if not transport_logger.isEnabledFor(logging.DEBUG):
+            return
+        fields: list[tuple[str, object]] = [
+            ("operation", operation),
+            ("event", event),
+            ("run_id", self._run_id),
+        ]
+        fields.extend(
+            (key, value) for key, value in metadata.items() if key in _TRANSPORT_LOG_METADATA_FIELDS
+        )
+        fields.extend(
+            [
+                ("http_status", http_status),
+                ("duration_ms", round((time.perf_counter() - started) * 1_000, 1)),
+            ]
+        )
+        rendered = " ".join(
+            f"{key}={_safe_log_value(value)}" for key, value in fields if value is not None
+        )
+        transport_logger.debug("LAREX SDK transport %s", rendered)
 
     def _result_retry_delay(self, attempt: int, response: httpx.Response | None) -> float:
         if response is not None:
@@ -669,6 +921,40 @@ def _is_retryable_result_status(status_code: int) -> bool:
 
 _RESULT_ERROR_BODY_LIMIT = 2_048
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")
+_TRANSPORT_LOG_METADATA_FIELDS = frozenset(
+    {
+        "attempt",
+        "byte_count",
+        "error_type",
+        "file_id",
+        "file_type",
+        "page_id",
+        "result_file_count",
+        "result_file_types",
+        "result_status",
+        "retry_delay_seconds",
+    }
+)
+
+
+def _result_file_types(files: Sequence[ResultFile]) -> str:
+    counts = Counter(file.type for file in files)
+    return ",".join(f"{file_type}:{counts[file_type]}" for file_type in sorted(counts)) or "none"
+
+
+def _download_file_type(file: ActionFile) -> str:
+    mime_type = (file.mime_type or "").lower()
+    if "xml" in mime_type or file.file_name.lower().endswith(".xml"):
+        return "xml"
+    if mime_type.startswith("image/"):
+        return "image"
+    return "file"
+
+
+def _safe_log_value(value: object) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=True)
 
 
 def _raise_for_result_status(response: httpx.Response) -> None:
