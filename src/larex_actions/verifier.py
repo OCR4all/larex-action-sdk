@@ -11,7 +11,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from .exceptions import DispatchVerificationError
-from .models import ActionDispatchPayload, PreflightRequest
+from .models import ActionDispatchPayload, ParameterValuesRequest, PreflightRequest
 from .nonce import NonceStore
 
 AUTH_HEADER = "x-larex-action-auth"
@@ -86,6 +86,30 @@ class DispatchVerifier:
             raise DispatchVerificationError("Processor id mismatch")
         if header_run != payload.request_id:
             raise DispatchVerificationError("Preflight request id mismatch")
+
+        self._accept(timestamp, nonce)
+        return payload
+
+    def verify_parameter_values(
+        self,
+        *,
+        method: str,
+        path_and_query: str,
+        headers: Mapping[str, str],
+        body: bytes | str,
+    ) -> ParameterValuesRequest:
+        raw_body, header_run, header_processor, timestamp, nonce = self._verify_envelope(
+            method=method,
+            path_and_query=path_and_query,
+            headers=headers,
+            body=body,
+        )
+        payload = self._parse_model(raw_body, ParameterValuesRequest, "Parameter values payload")
+
+        if header_processor != payload.processor_id or payload.processor_id != self.processor_id:
+            raise DispatchVerificationError("Processor id mismatch")
+        if header_run != payload.request_id:
+            raise DispatchVerificationError("Parameter values request id mismatch")
 
         self._accept(timestamp, nonce)
         return payload

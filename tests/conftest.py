@@ -119,5 +119,53 @@ def signed_preflight(
     }
 
 
+def parameter_values_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "protocolVersion": 1,
+        "requestId": "parameter-values-1",
+        "processorId": PROCESSOR_ID,
+        "providers": ["models"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def signed_parameter_values(
+    *,
+    payload: dict[str, Any] | None = None,
+    path_and_query: str = "/parameter-values",
+    secret: str = SECRET,
+    timestamp: str | None = None,
+    nonce: str = "parameter-values-nonce-1",
+) -> tuple[bytes, dict[str, str]]:
+    request_payload = payload or parameter_values_payload()
+    body = json.dumps(request_payload, separators=(",", ":")).encode("utf-8")
+    timestamp = timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    body_hash = _b64url(hashlib.sha256(body).digest())
+    request_id = request_payload["requestId"]
+    processor_id = request_payload["processorId"]
+    canonical = canonical_dispatch_request(
+        method="POST",
+        path_and_query=path_and_query,
+        run_id=request_id,
+        processor_id=processor_id,
+        timestamp=timestamp,
+        nonce=nonce,
+        body_hash=body_hash,
+    )
+    signature = "v1=" + _b64url(
+        hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).digest()
+    )
+    return body, {
+        "X-LAREX-Action-Auth": "hmac-sha256;v=1",
+        "X-LAREX-Action-Processor": processor_id,
+        "X-LAREX-Action-Run-Id": request_id,
+        "X-LAREX-Action-Timestamp": timestamp,
+        "X-LAREX-Action-Nonce": nonce,
+        "X-LAREX-Action-Body-SHA256": body_hash,
+        "X-LAREX-Action-Signature": signature,
+    }
+
+
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")

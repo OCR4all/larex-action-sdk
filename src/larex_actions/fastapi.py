@@ -2,13 +2,22 @@ from __future__ import annotations
 
 # pyright: reportUnusedFunction=false
 import asyncio
+import inspect
+import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from typing import Any
 
 from .client import ActionClient, ActionContext
 from .exceptions import ActionCancelled, DispatchVerificationError
-from .models import ActionCapabilities, ActionDispatchPayload, PreflightResponse
+from .models import (
+    ActionCapabilities,
+    ActionDispatchPayload,
+    ParameterChoice,
+    ParameterValuesResponse,
+    PreflightResponse,
+)
 from .nonce import NonceStore
 from .verifier import DispatchVerifier
 
@@ -19,6 +28,11 @@ except ImportError as exc:  # pragma: no cover
 
 Handler = Callable[[ActionContext], Awaitable[None]]
 ClientFactory = Callable[[ActionDispatchPayload], ActionClient]
+ParameterValueProvider = Callable[
+    [],
+    Iterable[ParameterChoice | Mapping[str, Any] | str | int | float | bool]
+    | Awaitable[Iterable[ParameterChoice | Mapping[str, Any] | str | int | float | bool]],
+]
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +56,7 @@ def create_larex_action_app(
     route_prefixes_env: str = "LAREX_ACTION_ROUTE_PREFIXES",
     max_concurrent_runs: int | None = None,
     processor_capabilities: ActionCapabilities | Mapping[str, bool] | None = None,
+    parameter_value_providers: Mapping[str, ParameterValueProvider] | None = None,
 ) -> FastAPI:
     if max_dispatch_body_bytes <= 0:
         raise ValueError("max_dispatch_body_bytes must be positive")
@@ -62,7 +77,11 @@ def create_larex_action_app(
         allowed_callback_origins_env,
     )
     resolved_route_prefixes = _resolve_route_prefixes(route_prefixes, route_prefixes_env)
-    resolved_capabilities = _resolve_processor_capabilities(processor_capabilities)
+    resolved_providers = dict(parameter_value_providers or {})
+    resolved_capabilities = _resolve_processor_capabilities(
+        processor_capabilities,
+        parameter_value_discovery=bool(resolved_providers),
+    )
     fastapi_app = app or FastAPI(title=f"LAREX Action Processor: {processor_id}")
     run_semaphore = asyncio.Semaphore(max_concurrent_runs) if max_concurrent_runs else None
 
@@ -118,10 +137,50 @@ def create_larex_action_app(
             capabilities=resolved_capabilities,
         ).model_dump(by_alias=True)
 
+    async def parameter_values(request: Request) -> Response:
+        body = await _read_limited_body(request, max_dispatch_body_bytes)
+        path_and_query = _request_path_and_query(request)
+        try:
+            payload = verifier.verify_parameter_values(
+                method=request.method,
+                path_and_query=path_and_query,
+                headers=request.headers,
+                body=body,
+            )
+        except DispatchVerificationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        unknown = [name for name in payload.providers if name not in resolved_providers]
+        if unknown:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown parameter value provider: {unknown[0]}"
+            )
+
+        try:
+            values = {
+                name: await _invoke_parameter_value_provider(resolved_providers[name])
+                for name in payload.providers
+            }
+            response = ParameterValuesResponse(
+                requestId=payload.request_id,
+                processorId=processor_id,
+                values=values,
+            )
+            content = response.model_dump_json(by_alias=True).encode("utf-8")
+        except Exception as exc:
+            logger.exception("Parameter value discovery failed")
+            raise HTTPException(status_code=500, detail="Parameter value discovery failed") from exc
+        if len(content) > 1_048_576:
+            raise HTTPException(
+                status_code=500, detail="Parameter value discovery response is too large"
+            )
+        return Response(content=content, media_type="application/json")
+
     for prefix in resolved_route_prefixes:
         fastapi_app.add_api_route(f"{prefix}/health", health, methods=["GET"])
         fastapi_app.add_api_route(f"{prefix}/ready", readiness, methods=["GET"])
         fastapi_app.add_api_route(f"{prefix}/preflight", preflight, methods=["POST"])
+        fastapi_app.add_api_route(f"{prefix}/parameter-values", parameter_values, methods=["POST"])
         fastapi_app.add_api_route(f"{prefix}/dispatch", dispatch, methods=["POST"])
 
     return fastapi_app
@@ -159,15 +218,53 @@ def _request_path_and_query(request: Request) -> str:
 
 def _resolve_processor_capabilities(
     capabilities: ActionCapabilities | Mapping[str, bool] | None,
+    *,
+    parameter_value_discovery: bool,
 ) -> ActionCapabilities:
     if capabilities is None:
         return ActionCapabilities(
             incrementalPageResults=True,
             customFileResults=True,
+            parameterValueDiscovery=parameter_value_discovery,
         )
     if isinstance(capabilities, ActionCapabilities):
-        return capabilities
-    return ActionCapabilities.model_validate(capabilities)
+        resolved = capabilities.model_copy()
+    else:
+        resolved = ActionCapabilities.model_validate(capabilities)
+    if parameter_value_discovery:
+        resolved.parameter_value_discovery = True
+    return resolved
+
+
+async def _invoke_parameter_value_provider(
+    provider: ParameterValueProvider,
+) -> list[ParameterChoice]:
+    if inspect.iscoroutinefunction(provider):
+        raw_values = await provider()
+    else:
+        raw_values = await asyncio.to_thread(provider)
+        if inspect.isawaitable(raw_values):
+            raw_values = await raw_values
+    if isinstance(raw_values, (str, bytes, Mapping)):
+        raise ValueError("parameter value providers must return an iterable of choices")
+
+    choices: list[ParameterChoice] = []
+    seen: set[tuple[type[Any], str]] = set()
+    for raw_value in raw_values:
+        if len(choices) >= 1_000:
+            raise ValueError("parameter value providers must not return more than 1000 choices")
+        if isinstance(raw_value, ParameterChoice):
+            choice = raw_value
+        elif isinstance(raw_value, Mapping):
+            choice = ParameterChoice.model_validate(raw_value)
+        else:
+            choice = ParameterChoice(value=raw_value, label=str(raw_value))
+        key = (type(choice.value), json.dumps(choice.value, sort_keys=True))
+        if key in seen:
+            raise ValueError("parameter value providers must not return duplicate values")
+        seen.add(key)
+        choices.append(choice)
+    return choices
 
 
 async def _run_handler(

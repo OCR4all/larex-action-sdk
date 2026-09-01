@@ -124,6 +124,35 @@ With that setting, the same processor also accepts `/kraken/dispatch`,
 must sign and call the same path the processor receives; do not strip the prefix
 in the reverse proxy before the request reaches the processor.
 
+## Dynamic Parameter Values
+
+Actions can constrain a parameter to values discovered by the processor. Register
+zero-argument synchronous or asynchronous providers with the FastAPI adapter:
+
+```python
+from larex_actions import ParameterChoice
+
+
+def discover_models():
+    return [
+        ParameterChoice(value="model-a", label="Model A"),
+        ParameterChoice(value="model-b", label="Model B"),
+    ]
+
+
+app = create_larex_action_app(
+    processor_id="my-processor",
+    dispatch_secret=secret,
+    handler=process,
+    parameter_value_providers={"models": discover_models},
+)
+```
+
+The adapter exposes the signed `/parameter-values` route (and prefixed variants),
+advertises `parameterValueDiscovery` during preflight, and limits each provider to
+1,000 unique primitive choices. LAREX calls providers again immediately before a
+run so returned values are an authoritative allowlist rather than UI suggestions.
+
 Capabilities default to both SDK-supported result features. Override them when a
 processor intentionally implements a smaller surface:
 

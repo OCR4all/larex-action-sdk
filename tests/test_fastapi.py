@@ -6,10 +6,17 @@ import json
 import httpx
 import pytest
 
-from larex_actions import ActionClient, ActionContext
+from larex_actions import ActionClient, ActionContext, ParameterChoice
 from larex_actions.fastapi import create_larex_action_app
 
-from .conftest import PROCESSOR_ID, SECRET, signed_dispatch, signed_preflight
+from .conftest import (
+    PROCESSOR_ID,
+    SECRET,
+    parameter_values_payload,
+    signed_dispatch,
+    signed_parameter_values,
+    signed_preflight,
+)
 
 
 @pytest.mark.asyncio
@@ -64,8 +71,127 @@ async def test_fastapi_adapter_accepts_authenticated_preflight() -> None:
         "capabilities": {
             "incrementalPageResults": True,
             "customFileResults": True,
+            "parameterValueDiscovery": False,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_discovers_typed_parameter_values() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("discovery must not run the processor")
+
+    async def models():
+        return [
+            ParameterChoice(value="model-a", label="Model A"),
+            {"value": 2, "label": "Model 2"},
+            True,
+        ]
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        parameter_value_providers={"models": models},
+    )
+    body, headers = signed_parameter_values()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/parameter-values", content=body, headers=headers)
+        preflight_body, preflight_headers = signed_preflight(nonce="other-nonce")
+        preflight = await client.post(
+            "/preflight", content=preflight_body, headers=preflight_headers
+        )
+
+    assert response.status_code == 200
+    assert response.json()["values"]["models"] == [
+        {"value": "model-a", "label": "Model A"},
+        {"value": 2, "label": "Model 2"},
+        {"value": True, "label": "True"},
+    ]
+    assert preflight.json()["capabilities"]["parameterValueDiscovery"] is True
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_supports_sync_provider_on_prefixed_route() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("discovery must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        route_prefixes=["/ner"],
+        parameter_value_providers={"models": lambda: ["model-a"]},
+    )
+    body, headers = signed_parameter_values(path_and_query="/ner/parameter-values")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/ner/parameter-values", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["values"]["models"] == [{"value": "model-a", "label": "model-a"}]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_rejects_unknown_or_duplicate_parameter_values() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("discovery must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        parameter_value_providers={"models": lambda: ["same", "same"]},
+    )
+    duplicate_body, duplicate_headers = signed_parameter_values()
+    unknown_body, unknown_headers = signed_parameter_values(
+        payload=parameter_values_payload(providers=["unknown"]),
+        nonce="unknown-nonce",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        duplicate = await client.post(
+            "/parameter-values", content=duplicate_body, headers=duplicate_headers
+        )
+        unknown = await client.post(
+            "/parameter-values", content=unknown_body, headers=unknown_headers
+        )
+
+    assert duplicate.status_code == 500
+    assert duplicate.json() == {"detail": "Parameter value discovery failed"}
+    assert unknown.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_authenticates_parameter_value_discovery() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("discovery must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        parameter_value_providers={"models": lambda: ["model-a"]},
+    )
+    body, headers = signed_parameter_values(secret="wrong-secret")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/parameter-values", content=body, headers=headers)
+
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
