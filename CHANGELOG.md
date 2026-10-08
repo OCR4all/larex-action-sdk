@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-10-08)
+
+### Features
+
+- Support dataset training and evaluation actions
+  ([`e165e3b`](https://github.com/OCR4all/larex-action-sdk/commit/e165e3b5369cdc7a1c7e4c190b3000f7ab52f414))
+
+
 ## v0.14.0 (2026-09-01)
 
 
