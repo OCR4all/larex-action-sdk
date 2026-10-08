@@ -29,5 +29,9 @@ class CustomFileResultsUnsupported(LarexActionError):
     """Raised when a processor returns custom files to an older LAREX server."""
 
 
+class EvaluationReportsUnsupported(LarexActionError):
+    """Raised when a processor returns a structured report to an older LAREX server."""
+
+
 class ResultSubmissionError(httpx.HTTPStatusError, LarexActionError):
     """Raised when LAREX rejects a result callback with a non-success response."""

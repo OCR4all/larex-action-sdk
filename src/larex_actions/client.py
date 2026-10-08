@@ -23,6 +23,7 @@ from .exceptions import (
     ActionCancelled,
     ActionUrlSecurityError,
     CustomFileResultsUnsupported,
+    EvaluationReportsUnsupported,
     IncrementalResultsUnsupported,
     ResultSubmissionError,
 )
@@ -31,6 +32,7 @@ from .models import (
     ActionDispatchPayload,
     ActionFile,
     ActionInput,
+    EvaluationReport,
     HeartbeatResponse,
     ResultFile,
     ResultStatus,
@@ -66,6 +68,7 @@ class ActionClient:
         allow_insecure_local_urls: bool = True,
         supports_incremental_page_results: bool = False,
         supports_custom_file_results: bool = False,
+        supports_evaluation_reports: bool = False,
         result_max_attempts: int = 4,
         result_retry_backoff: float = 0.5,
         result_retry_max_backoff: float = 8.0,
@@ -91,6 +94,7 @@ class ActionClient:
         self._cancelled_reported = False
         self._supports_incremental_page_results = supports_incremental_page_results
         self._supports_custom_file_results = supports_custom_file_results
+        self._supports_evaluation_reports = supports_evaluation_reports
         self._incremental_submission_started = False
         if result_max_attempts < 1:
             raise ValueError("result_max_attempts must be at least 1")
@@ -128,6 +132,7 @@ class ActionClient:
             allow_insecure_local_urls=allow_insecure_local_urls,
             supports_incremental_page_results=payload.capabilities.incremental_page_results,
             supports_custom_file_results=payload.capabilities.custom_file_results,
+            supports_evaluation_reports=payload.capabilities.evaluation_reports,
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
@@ -165,6 +170,9 @@ class ActionClient:
         )
         self._supports_custom_file_results = (
             self._supports_custom_file_results or action_input.capabilities.custom_file_results
+        )
+        self._supports_evaluation_reports = (
+            self._supports_evaluation_reports or action_input.capabilities.evaluation_reports
         )
         self._cancel_requested = self._cancel_requested or action_input.cancel_requested
         assert response is not None
@@ -367,6 +375,26 @@ class ActionClient:
             page_id=None,
         )
 
+    async def complete_evaluation(
+        self,
+        report: EvaluationReport,
+        message: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Complete a dataset evaluation with exactly one structured report."""
+        await self._ensure_results_allowed()
+        if not self._supports_evaluation_reports:
+            raise EvaluationReportsUnsupported(
+                "This LAREX server did not advertise evaluationReports support"
+            )
+        return await self._post_results(
+            ResultBuilder(),
+            operation="complete_evaluation",
+            status="completed",
+            message=message,
+            page_id=None,
+            evaluation_report=report,
+        )
+
     async def submit_page_results(
         self,
         page_id: str,
@@ -452,8 +480,11 @@ class ActionClient:
         status: ResultStatus,
         message: str | None,
         page_id: str | None,
+        evaluation_report: EvaluationReport | None = None,
     ) -> Mapping[str, Any]:
         result_files = results.files
+        if evaluation_report is not None and result_files:
+            raise ValueError("evaluation reports cannot be submitted with result files")
         if any(file.type == "file" for file in result_files) and not (
             self._supports_custom_file_results
         ):
@@ -473,6 +504,7 @@ class ActionClient:
                             status=status,
                             message=message,
                             page_id=page_id,
+                            evaluation_report=evaluation_report,
                             exit_stack=exit_stack,
                         ),
                     )
@@ -828,6 +860,13 @@ class ActionContext:
         message: str | None = None,
     ) -> Mapping[str, Any]:
         return await self.client.complete(results, message)
+
+    async def complete_evaluation(
+        self,
+        report: EvaluationReport,
+        message: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self.client.complete_evaluation(report, message)
 
     async def submit_page_results(
         self,

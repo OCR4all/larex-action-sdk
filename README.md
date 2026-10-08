@@ -312,3 +312,67 @@ Contents read/write access. A PAT is required so the generated
 tag/release triggers the existing PyPI publication workflow. Release candidate
 tags containing `rc` publish to TestPyPI; published stable releases publish to
 PyPI.
+
+## Dataset Training and Evaluation
+
+Training and evaluation processors use the same signed dispatch, input download,
+heartbeat, cancellation, and completion APIs as processing Actions. Define the
+Action as `kind: TRAINING` or `kind: EVALUATION` in LAREX. Their payloads expose
+`dataset_id` instead of `project_id`, and dispatches include `dataset_item_ids`.
+Each pulled input page represents a dataset item: `page.id` is its item ID,
+`page.source_page_id` identifies the source page, and `page.split` is `TRAIN`,
+`VAL`, or `TEST`. Each item contains exactly one frozen image and PAGE XML file.
+
+Training processors download those pairs, perform training, validate and publish
+the resulting model to processor-managed storage, then call
+`await ctx.complete(message="Model published")`. Training results contain no
+uploaded files; LAREX does not store or register the trained model.
+
+Evaluation processors return one structured report:
+
+```python
+from larex_actions import ActionContext, EvaluationMetric, EvaluationReport
+from larex_actions.fastapi import create_larex_action_app
+
+
+async def evaluate(ctx: ActionContext) -> None:
+    action_input = await ctx.pull_input()
+    # Download image/XML pairs and compute metrics here.
+    await ctx.check_cancelled()
+    report = EvaluationReport(
+        profile="larex.ocr-recognition",
+        profileVersion=1,
+        title="Recognition quality",
+        summary=[EvaluationMetric(
+            key="cer", label="CER", value=0.12,
+            format="PERCENT", direction="LOWER_IS_BETTER",
+        )],
+    )
+    await ctx.complete_evaluation(report, "Evaluation complete")
+
+
+app = create_larex_action_app(
+    processor_id="my-evaluation",
+    dispatch_secret=secret,
+    handler=evaluate,
+    processor_capabilities={"evaluationReports": True},
+)
+```
+
+Explicitly advertise `evaluationReports` in processor capabilities so LAREX's
+preflight accepts the evaluation processor. The server must also advertise this
+capability in its dispatch or pulled input; otherwise `complete_evaluation`
+raises `EvaluationReportsUnsupported`. Existing processing capabilities retain
+their defaults.
+
+Reports require at least one finite numeric summary metric and a profile/version
+matching the Action definition. Optional `EvaluationTable` and
+`EvaluationSample` objects add diagnostics; use `EvaluationTableRow(values={...})`
+for table cells and dataset item IDs for sample `inputId` references. Keys and
+sample IDs must be unique, JSON object keys must be nonblank strings, and the
+serialized report must fit within 10 MiB. Reports are revalidated before result
+serialization. LAREX validates input references and profile compatibility.
+
+Dataset Actions report progress through heartbeats and upload no result files.
+Evaluation completes with `complete_evaluation`, while training completes with
+an empty `complete` call. SDK support requires Pydantic 2.12 or later.
