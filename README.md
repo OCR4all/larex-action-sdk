@@ -379,13 +379,14 @@ an empty `complete` call. SDK support requires Pydantic 2.12 or later.
 
 ## Declaring annotation overwrite effects
 
+Output import behavior is fixed: XML replaces the page or selected annotation scope, and images replace the matching result variant. There is no output `mode` field; processor code and the SDK protocol are unchanged.
+
 In the Action YAML, XML-producing processors may declare target-specific potential replacement/deletion:
 
 ```yaml
 outputs:
   xml:
     enabled: true
-    mode: upsert
     overwrites:
       PAGE: [REGIONS, READING_ORDER]
       REGION: [TEXT_LINES]
