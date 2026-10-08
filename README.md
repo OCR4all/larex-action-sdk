@@ -376,3 +376,21 @@ serialization. LAREX validates input references and profile compatibility.
 Dataset Actions report progress through heartbeats and upload no result files.
 Evaluation completes with `complete_evaluation`, while training completes with
 an empty `complete` call. SDK support requires Pydantic 2.12 or later.
+
+## Declaring annotation overwrite effects
+
+In the Action YAML, XML-producing processors may declare target-specific potential replacement/deletion:
+
+```yaml
+outputs:
+  xml:
+    enabled: true
+    mode: upsert
+    overwrites:
+      PAGE: [REGIONS, READING_ORDER]
+      REGION: [TEXT_LINES]
+```
+
+Levels: `REGIONS`, `TEXT_LINES`, `BASELINES`, `TEXT`, `WORDS`, `GLYPHS`, `READING_ORDER`. Structural replacement includes descendant annotations. Text means nonempty text alternatives at any annotation level; reading order means explicit PAGE reading-order structures. Metadata is excluded. Declare the union of possible effects across parameters, matching LAREX's result-import target boundaries.
+
+Missing declarations produce a generic warning for existing XML; `[]` explicitly declares no overwrite risk. Declarations are advisory and are used by LAREX's pre-run page review, where users can exclude affected pages. They do not alter SDK result submission or enforce preservation. Install these definitions only after upgrading LAREX to support the field; protocol version remains unchanged.
