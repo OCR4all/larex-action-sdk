@@ -313,6 +313,7 @@ tag/release triggers the existing PyPI publication workflow. Release candidate
 tags containing `rc` publish to TestPyPI; published stable releases publish to
 PyPI.
 
+
 ## Dataset Training and Evaluation
 
 Training and evaluation processors use the same signed dispatch, input download,
@@ -395,3 +396,29 @@ outputs:
 Levels: `REGIONS`, `TEXT_LINES`, `BASELINES`, `TEXT`, `WORDS`, `GLYPHS`, `READING_ORDER`. Structural replacement includes descendant annotations. Text means nonempty text alternatives at any annotation level; reading order means explicit PAGE reading-order structures. Metadata is excluded. Declare the union of possible effects across parameters, matching LAREX's result-import target boundaries.
 
 Missing declarations produce a generic warning for existing XML; `[]` explicitly declares no overwrite risk. Declarations are advisory and are used by LAREX's pre-run page review, where users can exclude affected pages. They do not alter SDK result submission or enforce preservation. Install these definitions only after upgrading LAREX to support the field; protocol version remains unchanged.
+
+## Integration Actions
+
+`kind: INTEGRATION` supports project/editor or dataset inputs for external exports,
+API ingestion, and other work that returns status feedback. LAREX freezes the saved
+files before dispatch or queueing; each input supplies images, XML, or both according
+to the definition. Dataset splits are optional metadata. Exactly one of `projectId`
+and `datasetId` identifies the resource.
+
+```python
+async def integrate(ctx: ActionContext) -> None:
+    action_input = await ctx.pull_input()
+    for page in action_input.pages:
+        await ctx.check_cancelled()
+        xml_files = [await ctx.download_bytes(file) for file in page.xml]
+        image_files = [await ctx.download_bytes(file) for file in page.images]
+        # Export these bytes to your external service using ctx.run_id for idempotency.
+        await ctx.heartbeat(50, f"Exported {page.name}", raise_on_cancel=True)
+    await ctx.complete(message="External export complete")
+```
+
+Use existing heartbeat, failure, and cancellation APIs. Completion carries only
+final status and a message. The SDK rejects file/report/incremental result uploads
+for integrations before sending them to LAREX. Configure the FastAPI adapter with
+`processor_capabilities={"incrementalPageResults": False, "customFileResults": False}`.
+Integration snapshot bytes expire on terminal runs; repeating work starts a new run.

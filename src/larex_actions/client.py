@@ -32,6 +32,7 @@ from .models import (
     ActionDispatchPayload,
     ActionFile,
     ActionInput,
+    ActionKind,
     EvaluationReport,
     HeartbeatResponse,
     ResultFile,
@@ -73,6 +74,7 @@ class ActionClient:
         result_retry_backoff: float = 0.5,
         result_retry_max_backoff: float = 8.0,
         run_id: str | None = None,
+        kind: ActionKind | None = None,
     ) -> None:
         self._trusted_origin = _validate_callback_urls(
             pull_url=pull_url,
@@ -103,6 +105,7 @@ class ActionClient:
         self._result_max_attempts = result_max_attempts
         self._result_retry_backoff = result_retry_backoff
         self._result_retry_max_backoff = result_retry_max_backoff
+        self._kind = kind
         self._run_id = run_id
         self._file_page_ids: dict[str, str] = {}
 
@@ -137,6 +140,7 @@ class ActionClient:
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
             run_id=payload.run_id,
+            kind=payload.kind,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -160,6 +164,7 @@ class ActionClient:
         except Exception as exc:
             self._log_transport_failure("pull_input", started, response, exc)
             raise
+        self._kind = self._kind or action_input.kind
         self._run_id = self._run_id or action_input.run_id
         self._file_page_ids.update(
             (file.id, page.id) for page in action_input.pages for file in (*page.images, *page.xml)
@@ -483,6 +488,16 @@ class ActionClient:
         evaluation_report: EvaluationReport | None = None,
     ) -> Mapping[str, Any]:
         result_files = results.files
+        if self._kind == "INTEGRATION" and (
+            result_files
+            or evaluation_report is not None
+            or status == "running"
+            or page_id is not None
+        ):
+            raise ValueError(
+                "INTEGRATION actions accept only final status and message; "
+                "use heartbeats for progress"
+            )
         if evaluation_report is not None and result_files:
             raise ValueError("evaluation reports cannot be submitted with result files")
         if any(file.type == "file" for file in result_files) and not (

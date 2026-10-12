@@ -19,7 +19,7 @@ ResultStatus = Literal["running", "completed", "failed"]
 FileType = Literal["image", "xml", "file"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
 InputLevel = Literal["NONE", "OPTIONAL", "REQUIRED"]
-ActionKind = Literal["PROCESSING", "TRAINING", "EVALUATION"]
+ActionKind = Literal["PROCESSING", "TRAINING", "EVALUATION", "INTEGRATION"]
 DatasetSplit = Literal["TRAIN", "VAL", "TEST"]
 MetricFormat = Literal["NUMBER", "INTEGER", "PERCENT"]
 MetricDirection = Literal["HIGHER_IS_BETTER", "LOWER_IS_BETTER", "NEUTRAL"]
@@ -70,6 +70,15 @@ class ActionCapabilities(LarexModel):
         alias="evaluationReports",
         exclude_if=lambda value: value is False,
     )
+
+
+def _validate_integration_capabilities(capabilities: ActionCapabilities) -> None:
+    if (
+        capabilities.incremental_page_results
+        or capabilities.custom_file_results
+        or capabilities.evaluation_reports
+    ):
+        raise ValueError("INTEGRATION actions cannot advertise managed result capabilities")
 
 
 class PreflightRequest(LarexModel):
@@ -163,7 +172,18 @@ class ActionDispatchPayload(LarexModel):
 
     @model_validator(mode="after")
     def validate_resource_scope(self) -> ActionDispatchPayload:
-        if self.kind in {"TRAINING", "EVALUATION"}:
+        if self.kind == "INTEGRATION":
+            if bool(self.project_id) == bool(self.dataset_id):
+                raise ValueError(
+                    "INTEGRATION dispatches require exactly one projectId or datasetId"
+                )
+            ids = self.dataset_item_ids if self.dataset_id else self.page_ids
+            if not ids or len(ids) != len(set(ids)):
+                raise ValueError("INTEGRATION dispatches require nonempty, unique input IDs")
+            if (self.dataset_id and self.page_ids) or (self.project_id and self.dataset_item_ids):
+                raise ValueError("INTEGRATION input IDs must match the resource scope")
+            _validate_integration_capabilities(self.capabilities)
+        elif self.kind in {"TRAINING", "EVALUATION"}:
             if not self.dataset_id or self.project_id:
                 raise ValueError(f"{self.kind} dispatches require datasetId and no projectId")
             if not self.dataset_item_ids:
@@ -221,7 +241,25 @@ class ActionInput(LarexModel):
 
     @model_validator(mode="after")
     def validate_resource_scope(self) -> ActionInput:
-        if self.kind in {"TRAINING", "EVALUATION"}:
+        if self.kind == "INTEGRATION":
+            if bool(self.project_id) == bool(self.dataset_id):
+                raise ValueError("INTEGRATION inputs require exactly one projectId or datasetId")
+            if not self.pages or len({page.id for page in self.pages}) != len(self.pages):
+                raise ValueError("INTEGRATION inputs require nonempty, unique input IDs")
+            _validate_integration_capabilities(self.capabilities)
+            target = self.target_selection.type if self.target_selection else "PAGE"
+            for page in self.pages:
+                if self.dataset_id and not page.source_page_id:
+                    raise ValueError("Dataset INTEGRATION inputs require sourcePageId")
+                if not page.images and not page.xml:
+                    raise ValueError("Each INTEGRATION input requires at least one file")
+                for name, files in (("images", page.images), ("xml", page.xml)):
+                    level = getattr(self.input_requirements, name).level_for(target)
+                    if level == "REQUIRED" and not files:
+                        raise ValueError(f"INTEGRATION input is missing required {name}")
+                    if level == "NONE" and files:
+                        raise ValueError(f"INTEGRATION input contains undeclared {name}")
+        elif self.kind in {"TRAINING", "EVALUATION"}:
             if not self.dataset_id or self.project_id:
                 raise ValueError(f"{self.kind} inputs require datasetId and no projectId")
             seen_ids: set[str] = set()

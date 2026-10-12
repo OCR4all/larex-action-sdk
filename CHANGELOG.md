@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## Unreleased
+
+- Support `INTEGRATION` dispatches and inputs on projects/editor selections or datasets.
+- Validate image-only, XML-only, and combined integration inputs without mandatory dataset splits.
+- Reject integration result files, reports, and incremental submissions locally; reuse status/message callbacks.
+
+
 <!-- version list -->
 
 ## v0.15.0 (2026-10-08)
