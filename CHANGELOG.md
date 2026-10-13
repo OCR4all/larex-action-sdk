@@ -8,6 +8,18 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-10-13)
+
+### Features
+
+- Simplify incremental page result reporting
+  ([`a17bae5`](https://github.com/OCR4all/larex-action-sdk/commit/a17bae558871f5b99d0b0dd678bbbce0641315cf))
+
+### Breaking Changes
+
+- Submit_page_results no longer accepts outcome. Use page_status, reason, and warnings instead.
+
+
 ## v0.19.0 (2026-10-13)
 
 
