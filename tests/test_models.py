@@ -120,3 +120,97 @@ def test_training_payload_rejects_project_scope() -> None:
                 "resultUrl": "https://larex.example/results",
             }
         )
+
+
+@pytest.mark.parametrize("kind", ["TRAINING", "EVALUATION"])
+@pytest.mark.parametrize("image_count,xml_count", [(1, 1), (2, 1), (0, 1), (2, 0), (2, 2)])
+def test_dataset_input_supports_multiple_images_and_requires_one_xml(
+    kind: str, image_count: int, xml_count: int
+) -> None:
+    data = {
+        "protocolVersion": 1,
+        "runId": "run-multi",
+        "inputRequirements": {"images": {"level": "REQUIRED", "multiple": True}},
+        "processorKey": "processor",
+        "kind": kind,
+        "datasetId": "dataset",
+        "pages": [
+            {
+                "id": "item",
+                "name": "Page",
+                "sourcePageId": "page",
+                "split": "TRAIN",
+                "images": [
+                    {
+                        "id": f"image-{index}",
+                        "fileName": f"image-{index}.png",
+                        "variant": f"variant-{index}",
+                        "downloadUrl": f"https://larex.example/{index}",
+                    }
+                    for index in range(image_count)
+                ],
+                "xml": [
+                    {
+                        "id": f"xml-{index}",
+                        "fileName": "page.xml",
+                        "downloadUrl": f"https://larex.example/xml/{index}",
+                    }
+                    for index in range(xml_count)
+                ],
+            }
+        ],
+    }
+    if image_count == 0 or xml_count != 1:
+        with pytest.raises(ValidationError, match="at least one image and exactly one XML"):
+            ActionInput.model_validate(data)
+    else:
+        parsed = ActionInput.model_validate(data)
+        assert len(parsed.pages) == 1
+        assert [image.variant for image in parsed.pages[0].images] == [
+            f"variant-{index}" for index in range(image_count)
+        ]
+
+
+@pytest.mark.parametrize("kind", ["PROCESSING", "INTEGRATION", "TRAINING", "EVALUATION"])
+@pytest.mark.parametrize("multiple", [None, False, True])
+def test_multiple_images_require_explicit_opt_in(kind: str, multiple: bool | None) -> None:
+    requirement: dict[str, object] = {"level": "REQUIRED"}
+    if multiple is not None:
+        requirement["multiple"] = multiple
+    data = {
+        "protocolVersion": 1,
+        "runId": "run",
+        "processorKey": "processor",
+        "kind": kind,
+        "projectId": "project" if kind in {"PROCESSING", "INTEGRATION"} else None,
+        "datasetId": "dataset" if kind in {"TRAINING", "EVALUATION"} else None,
+        "inputRequirements": {"images": requirement, "xml": {"level": "REQUIRED"}},
+        "pages": [
+            {
+                "id": "item",
+                "name": "Page",
+                "sourcePageId": "page",
+                "split": "TRAIN",
+                "images": [
+                    {
+                        "id": f"image-{index}",
+                        "fileName": f"image-{index}.png",
+                        "downloadUrl": f"https://larex.example/image/{index}",
+                    }
+                    for index in range(2)
+                ],
+                "xml": [
+                    {
+                        "id": "xml",
+                        "fileName": "page.xml",
+                        "downloadUrl": "https://larex.example/xml",
+                    }
+                ],
+            }
+        ],
+    }
+    if multiple:
+        assert len(ActionInput.model_validate(data).pages[0].images) == 2
+    else:
+        with pytest.raises(ValidationError, match="Multiple image variants require"):
+            ActionInput.model_validate(data)

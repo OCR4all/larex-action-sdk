@@ -46,6 +46,7 @@ class ActionTargetSelection(LarexModel):
 
 class InputRequirement(LarexModel):
     level: InputLevel = "NONE"
+    multiple: bool = False
     required_for_targets: list[ActionTarget] = Field(
         default_factory=list, alias="requiredForTargets"
     )
@@ -241,6 +242,12 @@ class ActionInput(LarexModel):
 
     @model_validator(mode="after")
     def validate_resource_scope(self) -> ActionInput:
+        if not self.input_requirements.images.multiple and any(
+            len(page.images) > 1 for page in self.pages
+        ):
+            raise ValueError(
+                "Multiple image variants require inputRequirements.images.multiple: true"
+            )
         if self.kind == "INTEGRATION":
             if bool(self.project_id) == bool(self.dataset_id):
                 raise ValueError("INTEGRATION inputs require exactly one projectId or datasetId")
@@ -269,12 +276,12 @@ class ActionInput(LarexModel):
                 seen_ids.add(page.id)
                 if not page.source_page_id or page.split is None:
                     raise ValueError("dataset Action inputs require sourcePageId and split")
-                # Dataset actions always receive one frozen image/XML pair.  This is
-                # independent of the generic processing input requirement fields;
-                # those fields describe project-scoped actions only.
-                if len(page.images) != 1 or len(page.xml) != 1:
+                # Dataset actions always require frozen images and exactly one XML.
+                # Image multiplicity is checked above for every Action kind.
+                if not page.images or len(page.xml) != 1:
                     raise ValueError(
-                        "dataset Action inputs require exactly one image and one XML file per item"
+                        "dataset Action inputs require at least one image "
+                        "and exactly one XML file per item"
                     )
         elif not self.project_id or self.dataset_id:
             raise ValueError("PROCESSING inputs require projectId and no datasetId")

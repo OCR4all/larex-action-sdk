@@ -322,7 +322,10 @@ Action as `kind: TRAINING` or `kind: EVALUATION` in LAREX. Their payloads expose
 `dataset_id` instead of `project_id`, and dispatches include `dataset_item_ids`.
 Each pulled input page represents a dataset item: `page.id` is its item ID,
 `page.source_page_id` identifies the source page, and `page.split` is `TRAIN`,
-`VAL`, or `TEST`. Each item contains exactly one frozen image and PAGE XML file.
+`VAL`, or `TEST`. Each item contains one frozen image by default and exactly one PAGE XML file.
+Actions declaring `inputs.images.multiple: true` can receive multiple frozen images
+per item. The SDK checks this capability in `inputRequirements.images.multiple`
+for every Action kind.
 
 Training processors download those pairs, perform training, validate and publish
 the resulting model to processor-managed storage, then call

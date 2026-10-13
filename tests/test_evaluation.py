@@ -237,7 +237,7 @@ def test_dataset_input_requires_frozen_pair_and_split(kind: str) -> None:
         "datasetId": "dataset-1",
         "pages": [{"id": "item-1", "name": "Page", "sourcePageId": "page-1", "split": "TEST"}],
     }
-    with pytest.raises(ValidationError, match="exactly one image and one XML"):
+    with pytest.raises(ValidationError, match="at least one image and exactly one XML"):
         ActionInput.model_validate(data)
 
 
