@@ -16,6 +16,7 @@ from pydantic import (
 
 RunStatus = Literal["running", "failed", "cancelled"]
 ResultStatus = Literal["running", "completed", "failed"]
+PageOutcomeStatus = Literal["SUCCEEDED", "FAILED", "SKIPPED"]
 FileType = Literal["image", "xml", "file"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
 InputLevel = Literal["NONE", "OPTIONAL", "REQUIRED"]
@@ -62,7 +63,7 @@ class InputRequirements(LarexModel):
 
 class PageOutcome(LarexModel):
     page_id: str = Field(alias="pageId", min_length=1)
-    status: Literal["SUCCEEDED", "FAILED", "SKIPPED"] = "SUCCEEDED"
+    status: PageOutcomeStatus = "SUCCEEDED"
     message: str | None = None
     warnings: list[str] = Field(default_factory=list)
 

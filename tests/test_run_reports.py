@@ -11,7 +11,10 @@ from pydantic import ValidationError
 
 from larex_actions import (
     ActionClient,
+    ActionContext,
+    ActionDispatchPayload,
     PageOutcome,
+    PageOutcomeStatus,
     PageResultRejected,
     ResultBuilder,
     ResultSubmissionError,
@@ -19,6 +22,8 @@ from larex_actions import (
     RunReport,
     RunReportsUnsupported,
 )
+
+from .conftest import dispatch_payload
 
 
 def client_for(http: httpx.AsyncClient, *, reports: bool = True) -> ActionClient:
@@ -64,9 +69,7 @@ async def test_failed_page_acknowledgement_then_completion() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = client_for(http)
-        await client.submit_page_results(
-            "p1", outcome=PageOutcome(pageId="p1", status="FAILED", message="Invalid XML")
-        )
+        await client.submit_page_results("p1", page_status="FAILED", reason="Invalid XML")
         await client.complete(run_report=RunReport(issues=[RunIssue(message="Some pages failed")]))
     assert manifests[0]["status"] == "running"
     assert manifests[0]["files"] == []
@@ -101,7 +104,7 @@ async def test_new_reporting_does_not_silently_downgrade_on_old_server() -> None
         with pytest.raises(RunReportsUnsupported):
             await client.complete(run_report=RunReport())
         with pytest.raises(RunReportsUnsupported):
-            await client.submit_page_results("p1", outcome=PageOutcome(pageId="p1"))
+            await client.submit_page_results("p1", page_status="SUCCEEDED")
 
 
 @pytest.mark.asyncio
@@ -146,3 +149,108 @@ async def test_fatal_heartbeat_can_include_run_level_report() -> None:
         )
     assert sent[0]["status"] == "failed"
     assert sent[0]["runReport"]["issues"][0]["message"] == "See logs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED", "SKIPPED"])
+async def test_context_submits_page_diagnostics_separately_from_run_message(
+    status: PageOutcomeStatus,
+) -> None:
+    manifests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        manifests.append(manifest_from(request))
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        ctx = ActionContext(
+            payload=ActionDispatchPayload.model_validate(dispatch_payload()),
+            client=client_for(http),
+        )
+        await ctx.submit_page_results(
+            "p1",
+            message="Processed page 1/1000",
+            page_status=status,
+            reason="Page diagnostic",
+            warnings=["Low confidence"],
+        )
+
+    manifest = manifests[0]
+    assert manifest["pageId"] == "p1"
+    assert manifest["message"] == "Processed page 1/1000"
+    assert manifest["pageOutcome"] == {
+        "pageId": "p1",
+        "status": status,
+        "message": "Page diagnostic",
+        "warnings": ["Low confidence"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_warnings_without_status_preserve_successful_files() -> None:
+    manifests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        manifests.append(manifest_from(request))
+        return httpx.Response(200, json={})
+
+    results = ResultBuilder()
+    results.add_xml_bytes("p1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await client_for(http).submit_page_results("p1", results, warnings=["Low confidence"])
+
+    assert manifests[0]["pageOutcome"] == {
+        "pageId": "p1",
+        "status": "SUCCEEDED",
+        "warnings": ["Low confidence"],
+    }
+    assert len(manifests[0]["files"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["FAILED", "SKIPPED"])
+@pytest.mark.parametrize("reason", [None, "", " "])
+async def test_page_failure_or_skip_requires_reason_even_with_run_message(
+    status: PageOutcomeStatus, reason: str | None
+) -> None:
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ValidationError, match="reason"):
+            await client_for(http).submit_page_results(
+                "p1", message="Run status", page_status=status, reason=reason
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["FAILED", "SKIPPED"])
+async def test_failed_or_skipped_pages_cannot_upload_files(status: PageOutcomeStatus) -> None:
+    results = ResultBuilder()
+    results.add_xml_bytes("p1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ValidationError, match="cannot submit files"):
+            await client_for(http).submit_page_results(
+                "p1", results, page_status=status, reason="Not processed"
+            )
+
+
+@pytest.mark.asyncio
+async def test_blank_warning_is_rejected_before_upload() -> None:
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ValidationError, match="warnings must not be blank"):
+            await client_for(http).submit_page_results("p1", warnings=[" "])
+
+
+@pytest.mark.asyncio
+async def test_unchanged_success_call_does_not_require_run_reports() -> None:
+    manifests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        manifests.append(manifest_from(request))
+        return httpx.Response(200, json={})
+
+    results = ResultBuilder()
+    results.add_xml_bytes("p1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await client_for(http, reports=False).submit_page_results("p1", results, "Page done")
+
+    assert manifests[0]["message"] == "Page done"
+    assert "pageOutcome" not in manifests[0]

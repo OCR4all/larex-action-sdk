@@ -38,6 +38,7 @@ from .models import (
     EvaluationReport,
     HeartbeatResponse,
     PageOutcome,
+    PageOutcomeStatus,
     ResultFile,
     ResultStatus,
     RunReport,
@@ -440,8 +441,15 @@ class ActionClient:
         results: ResultBuilder | None = None,
         message: str | None = None,
         *,
-        outcome: PageOutcome | None = None,
+        page_status: PageOutcomeStatus | None = None,
+        reason: str | None = None,
+        warnings: list[str] | None = None,
     ) -> Mapping[str, Any]:
+        """Settle one page; ``message`` updates run progress, ``reason`` explains its outcome.
+
+        Status defaults to success. Failed/skipped pages require a reason and no files.
+        Warnings flag nonfatal concerns, including for successful pages.
+        """
         await self._ensure_results_allowed()
         if not self._supports_incremental_page_results:
             raise IncrementalResultsUnsupported(
@@ -449,6 +457,15 @@ class ActionClient:
             )
         if not page_id.strip():
             raise ValueError("page_id must not be blank")
+        has_page_diagnostics = any(value is not None for value in (page_status, reason, warnings))
+        outcome = None
+        if has_page_diagnostics:
+            outcome = PageOutcome(
+                pageId=page_id,
+                status=page_status if page_status is not None else "SUCCEEDED",
+                message=reason,
+                warnings=warnings if warnings is not None else [],
+            )
         results = results or ResultBuilder()
         mismatched_page_ids = {file.page_id for file in results.files if file.page_id != page_id}
         if mismatched_page_ids:
@@ -979,9 +996,19 @@ class ActionContext:
         results: ResultBuilder | None = None,
         message: str | None = None,
         *,
-        outcome: PageOutcome | None = None,
+        page_status: PageOutcomeStatus | None = None,
+        reason: str | None = None,
+        warnings: list[str] | None = None,
     ) -> Mapping[str, Any]:
-        return await self.client.submit_page_results(page_id, results, message, outcome=outcome)
+        """Submit page results and diagnostics; see :meth:`ActionClient.submit_page_results`."""
+        return await self.client.submit_page_results(
+            page_id,
+            results,
+            message,
+            page_status=page_status,
+            reason=reason,
+            warnings=warnings,
+        )
 
     async def upload_results(
         self,

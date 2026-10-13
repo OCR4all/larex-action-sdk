@@ -446,25 +446,32 @@ use `ctx.complete_evaluation(report)`. Progress uses heartbeats, and `ctx.fail()
 may omit files. LAREX stores files with dataset-configured retention and offers
 individual downloads from the evaluation detail page.
 
-## Run outcomes and reports (0.19)
+## Run outcomes and reports
 
 LAREX advertises `capabilities.runReports`. The reporting APIs require it and
 raise `RunReportsUnsupported` on older servers. Existing result calls remain
 supported. Send `completed` normally; LAREX derives `COMPLETED_WITH_ISSUES` from
 recorded failures and warnings, or `FAILED` when every page fails.
 
+SDK 0.20 simplifies incremental submissions: supply the page ID once, then use
+`page_status`, `reason`, and `warnings`. The SDK 0.19 `outcome` keyword has been
+removed. Bulk reports continue to use `PageOutcome` entries containing page IDs.
+
 ```python
-from larex_actions import PageOutcome, PageResultRejected, RunIssue, RunReport
+from larex_actions import PageResultRejected, RunIssue, RunReport
 
 # Recoverable failure: acknowledge the page and continue with later pages.
 await ctx.submit_page_results(
-    page.id, outcome=PageOutcome(pageId=page.id, status="FAILED", message="Invalid input")
+    page.id, page_status="FAILED", reason="Invalid input"
 )
 
 # Deliberate skips are counted without making the run have issues.
 await ctx.submit_page_results(
-    page.id, outcome=PageOutcome(pageId=page.id, status="SKIPPED", message="No eligible content")
+    page.id, page_status="SKIPPED", reason="No eligible content"
 )
+
+# Successful output can still have nonfatal concerns.
+await ctx.submit_page_results(page.id, results, warnings=["Low recognition confidence"])
 
 # Catch only the typed rejection: LAREX already settled this failed page.
 try:
@@ -482,6 +489,13 @@ submissions replay the stored outcome. Fatal errors and cancellation still stop
 processing; do not catch transport, authentication, or arbitrary runtime errors
 as recoverable page failures.
 
+`message` is run progress text. `reason` describes this page's outcome and is
+stored in its report; the SDK maps it to the protocol's page-outcome `message`.
+Warnings are additional nonfatal findings, including on successful pages, and
+make the run complete with issues. They do not make a successful page retryable.
+Omitting `page_status` means success. Calls without any page diagnostics keep
+their existing behavior and do not require `runReports` support.
+
 Bulk completion uses `RunReport(pageOutcomes=[...])` with an outcome for every
 selected page. Incremental completion reuses submitted page outcomes and accepts
 only run-level issues in its report. All Action kinds can report run-level issues;
@@ -495,5 +509,5 @@ Reports are revalidated before submission and limited to 10 MiB. LAREX computes
 counts and provides the readable report and JSON download in run details.
 
 Deploy LAREX reporting support before releasing this SDK, then upgrade official
-processors to SDK 0.19 and regenerate their lockfiles. SDK 0.18 predates these
-interfaces.
+processors using the simplified incremental interface to SDK 0.20 and regenerate
+their lockfiles. Bulk reporting remains available from SDK 0.19.
