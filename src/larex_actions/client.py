@@ -75,6 +75,7 @@ class ActionClient:
         result_retry_max_backoff: float = 8.0,
         run_id: str | None = None,
         kind: ActionKind | None = None,
+        evaluation_output_mode: str | None = None,
     ) -> None:
         self._trusted_origin = _validate_callback_urls(
             pull_url=pull_url,
@@ -106,6 +107,7 @@ class ActionClient:
         self._result_retry_backoff = result_retry_backoff
         self._result_retry_max_backoff = result_retry_max_backoff
         self._kind = kind
+        self._evaluation_output_mode = evaluation_output_mode
         self._run_id = run_id
         self._file_page_ids: dict[str, str] = {}
 
@@ -141,6 +143,7 @@ class ActionClient:
             result_retry_max_backoff=result_retry_max_backoff,
             run_id=payload.run_id,
             kind=payload.kind,
+            evaluation_output_mode=payload.evaluation_output_mode,
         )
 
     async def __aenter__(self) -> ActionClient:
@@ -165,6 +168,9 @@ class ActionClient:
             self._log_transport_failure("pull_input", started, response, exc)
             raise
         self._kind = self._kind or action_input.kind
+        self._evaluation_output_mode = (
+            self._evaluation_output_mode or action_input.evaluation_output_mode
+        )
         self._run_id = self._run_id or action_input.run_id
         self._file_page_ids.update(
             (file.id, page.id) for page in action_input.pages for file in (*page.images, *page.xml)
@@ -500,6 +506,26 @@ class ActionClient:
             )
         if evaluation_report is not None and result_files:
             raise ValueError("evaluation reports cannot be submitted with result files")
+        if self._kind == "EVALUATION":
+            file_mode = self._evaluation_output_mode == "FILES"
+            if status == "running" or page_id is not None:
+                raise ValueError(
+                    "Evaluation results apply to the whole run; use heartbeats for progress"
+                )
+            if file_mode:
+                if evaluation_report is not None:
+                    raise ValueError("File evaluations must not return evaluationReport")
+                if any(
+                    file.type != "file" or file.page_id is not None or file.variant is not None
+                    for file in result_files
+                ):
+                    raise ValueError("Evaluation files must be run-level file outputs")
+                if status == "completed" and not result_files:
+                    raise ValueError("Completed file evaluations require at least one file")
+            elif result_files or (status == "completed" and evaluation_report is None):
+                raise ValueError(
+                    "Report evaluations require complete_evaluation(report) without files"
+                )
         if any(file.type == "file" for file in result_files) and not (
             self._supports_custom_file_results
         ):

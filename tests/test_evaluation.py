@@ -310,3 +310,75 @@ async def test_dataset_input_download_and_completion(kind: str) -> None:
     assert len(manifests) == 1
     assert manifests[0]["files"] == []
     assert ("evaluationReport" in manifests[0]) == (kind == "EVALUATION")
+
+
+@pytest.mark.asyncio
+async def test_file_evaluation_completion_retries_opaque_multipart() -> None:
+    manifests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.content
+        )
+        parts = list(message.iter_parts())
+        assert len(parts) == 3
+        manifests.append(json.loads(parts[0].get_content()))
+        assert parts[1].get_filename() == "metrics.csv"
+        assert parts[1].get_payload(decode=True) == b"score,1"
+        assert parts[2].get_payload(decode=True) == b"\x00\xff"
+        return httpx.Response(503 if len(manifests) == 1 else 200, json={"status": "COMPLETED"})
+
+    payload = dataset_payload(
+        evaluationOutputMode="FILES", capabilities={"customFileResults": True}
+    )
+    results = ResultBuilder()
+    results.add_file_bytes(b"score,1", "metrics.csv", mime_type="text/csv")
+    results.add_file_bytes(b"\x00\xff", "results.bin")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client, result_retry_backoff=0)
+        await ActionContext(payload=payload, client=client).complete(results)
+    assert len(manifests) == 2
+    assert manifests[0] == manifests[1]
+    assert "evaluationReport" not in manifests[0]
+    assert all(
+        file["type"] == "file" and file.get("pageId") is None for file in manifests[0]["files"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_evaluation_validates_mode_scope_and_capability_before_sending() -> None:
+    from larex_actions import CustomFileResultsUnsupported
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Invalid result must not be sent")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        payload = dataset_payload(
+            evaluationOutputMode="FILES",
+            capabilities={"customFileResults": True, "evaluationReports": True},
+        )
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        with pytest.raises(ValueError, match="at least one file"):
+            await client.complete()
+        with pytest.raises(ValueError, match="must not return evaluationReport"):
+            await client.complete_evaluation(report())
+        results = ResultBuilder()
+        results.add_file_bytes(b"contents", "file.bin", page_id="item-1")
+        with pytest.raises(ValueError, match="run-level"):
+            await client.complete(results)
+        results = ResultBuilder()
+        results.add_xml_bytes("item-1", b"<PcGts/>", "page.xml")
+        with pytest.raises(ValueError, match="run-level"):
+            await client.complete(results)
+        results = ResultBuilder()
+        results.add_file_bytes(b"contents", "file.bin")
+        unsupported = ActionClient.from_dispatch(
+            dataset_payload(evaluationOutputMode="FILES"), client=http_client
+        )
+        with pytest.raises(CustomFileResultsUnsupported):
+            await unsupported.complete(results)
+        report_client = ActionClient.from_dispatch(
+            dataset_payload(capabilities={"evaluationReports": True}), client=http_client
+        )
+        with pytest.raises(ValueError, match="complete_evaluation"):
+            await report_client.complete(results)

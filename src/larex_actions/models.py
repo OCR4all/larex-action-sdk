@@ -158,6 +158,9 @@ class ActionDispatchPayload(LarexModel):
     kind: ActionKind = "PROCESSING"
     project_id: str | None = Field(default=None, alias="projectId")
     dataset_id: str | None = Field(default=None, alias="datasetId")
+    evaluation_output_mode: Literal["REPORT", "FILES"] | None = Field(
+        default=None, alias="evaluationOutputMode"
+    )
     page_ids: list[str] = Field(alias="pageIds", default_factory=list)
     dataset_item_ids: list[str] = Field(alias="datasetItemIds", default_factory=list)
     target_selection: ActionTargetSelection | None = Field(default=None, alias="targetSelection")
@@ -229,6 +232,9 @@ class ActionInput(LarexModel):
     kind: ActionKind = "PROCESSING"
     project_id: str | None = Field(default=None, alias="projectId")
     dataset_id: str | None = Field(default=None, alias="datasetId")
+    evaluation_output_mode: Literal["REPORT", "FILES"] | None = Field(
+        default=None, alias="evaluationOutputMode"
+    )
     parameters: dict[str, Any] = Field(default_factory=dict)
     pages: list[ActionPage] = Field(default_factory=list)
     target_selection: ActionInputTargetSelection | None = Field(

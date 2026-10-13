@@ -425,3 +425,23 @@ final status and a message. The SDK rejects file/report/incremental result uploa
 for integrations before sending them to LAREX. Configure the FastAPI adapter with
 `processor_capabilities={"incrementalPageResults": False, "customFileResults": False}`.
 Integration snapshot bytes expire on terminal runs; repeating work starts a new run.
+
+### Downloadable evaluation files
+
+Configure the Action YAML with `evaluation.outputMode: FILES` and advertise
+`processor_capabilities={"customFileResults": True}` in your processor app.
+Dispatch and pulled input expose `evaluationOutputMode` (`evaluation_output_mode`
+in Python). Existing definitions default to structured reports.
+
+```python
+results = ResultBuilder()
+results.add_file_path("metrics.csv", mime_type="text/csv")
+results.add_file_path("report.pdf", mime_type="application/pdf")
+await ctx.complete(results, message="Evaluation complete")
+```
+
+Return at least one run-level file without `page_id`. File-mode evaluations
+cannot also return an `EvaluationReport`; report-mode evaluations continue to
+use `ctx.complete_evaluation(report)`. Progress uses heartbeats, and `ctx.fail()`
+may omit files. LAREX stores files with dataset-configured retention and offers
+individual downloads from the evaluation detail page.
