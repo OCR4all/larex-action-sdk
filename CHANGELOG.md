@@ -6,8 +6,15 @@
 - Validate image-only, XML-only, and combined integration inputs without mandatory dataset splits.
 - Reject integration result files, reports, and incremental submissions locally; reuse status/message callbacks.
 
-
 <!-- version list -->
+
+## v0.16.0 (2026-10-12)
+
+### Features
+
+- **sdk**: Support integration actions on projects and datasets
+  ([`d24aa50`](https://github.com/OCR4all/larex-action-sdk/commit/d24aa50c40829f478baaf5a74b4b3538efc1d04e))
+
 
 ## v0.15.0 (2026-10-08)
 
