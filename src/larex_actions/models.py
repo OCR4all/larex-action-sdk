@@ -60,10 +60,57 @@ class InputRequirements(LarexModel):
     xml: InputRequirement = Field(default_factory=InputRequirement)
 
 
+class PageOutcome(LarexModel):
+    page_id: str = Field(alias="pageId", min_length=1)
+    status: Literal["SUCCEEDED", "FAILED", "SKIPPED"] = "SUCCEEDED"
+    message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> PageOutcome:
+        if not self.page_id.strip():
+            raise ValueError("pageId must not be blank")
+        if self.status != "SUCCEEDED" and (not self.message or not self.message.strip()):
+            raise ValueError("failed and skipped pages require a reason")
+        if any(not warning.strip() for warning in self.warnings):
+            raise ValueError("warnings must not be blank")
+        return self
+
+
+class RunIssue(LarexModel):
+    severity: Literal["WARNING", "ERROR"] = "WARNING"
+    message: str = Field(min_length=1)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("issue message must not be blank")
+        return value
+
+
+class RunReport(LarexModel):
+    schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
+    page_outcomes: list[PageOutcome] = Field(default_factory=list, alias="pageOutcomes")
+    issues: list[RunIssue] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_report(self) -> RunReport:
+        ids = [outcome.page_id for outcome in self.page_outcomes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("run report page IDs must be unique")
+        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > 10 * 1024 * 1024:
+            raise ValueError("run report must not exceed 10 MiB")
+        return self
+
+
 class ActionCapabilities(LarexModel):
     incremental_page_results: bool = Field(default=False, alias="incrementalPageResults")
     custom_file_results: bool = Field(default=False, alias="customFileResults")
     parameter_value_discovery: bool = Field(default=False, alias="parameterValueDiscovery")
+    run_reports: bool = Field(
+        default=False, alias="runReports", exclude_if=lambda value: value is False
+    )
     # Omit the additive capability when false so legacy preflight responses keep
     # their exact wire shape; processors that support reports advertise `true`.
     evaluation_reports: bool = Field(
@@ -478,6 +525,24 @@ class ResultManifest(LarexModel):
     page_id: str | None = Field(default=None, alias="pageId")
     files: list[ResultFile] = Field(default_factory=list)
     evaluation_report: EvaluationReport | None = Field(default=None, alias="evaluationReport")
+    page_outcome: PageOutcome | None = Field(default=None, alias="pageOutcome")
+    run_report: RunReport | None = Field(default=None, alias="runReport")
+
+    @field_validator("page_outcome", "run_report", mode="before")
+    @classmethod
+    def revalidate_run_reporting(cls, value: Any) -> Any:
+        return value.model_dump(by_alias=True) if isinstance(value, BaseModel) else value
+
+    @model_validator(mode="after")
+    def validate_run_reporting(self) -> ResultManifest:
+        if self.page_outcome is not None:
+            if self.status != "running" or self.page_id != self.page_outcome.page_id:
+                raise ValueError("pageOutcome requires running status and matching pageId")
+            if self.page_outcome.status != "SUCCEEDED" and self.files:
+                raise ValueError("failed and skipped pages cannot submit files")
+        if self.run_report is not None and (self.status == "running" or self.page_id is not None):
+            raise ValueError("runReport requires terminal results without pageId")
+        return self
 
     @field_validator("evaluation_report", mode="before")
     @classmethod

@@ -226,6 +226,7 @@ def _resolve_processor_capabilities(
             incrementalPageResults=True,
             customFileResults=True,
             parameterValueDiscovery=parameter_value_discovery,
+            runReports=True,
         )
     if isinstance(capabilities, ActionCapabilities):
         resolved = capabilities.model_copy()

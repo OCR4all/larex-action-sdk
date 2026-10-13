@@ -421,7 +421,7 @@ async def integrate(ctx: ActionContext) -> None:
 ```
 
 Use existing heartbeat, failure, and cancellation APIs. Completion carries only
-final status and a message. The SDK rejects file/report/incremental result uploads
+final status, a message, and optional run-level issues. The SDK rejects file/evaluation-report/incremental result uploads
 for integrations before sending them to LAREX. Configure the FastAPI adapter with
 `processor_capabilities={"incrementalPageResults": False, "customFileResults": False}`.
 Integration snapshot bytes expire on terminal runs; repeating work starts a new run.
@@ -445,3 +445,55 @@ cannot also return an `EvaluationReport`; report-mode evaluations continue to
 use `ctx.complete_evaluation(report)`. Progress uses heartbeats, and `ctx.fail()`
 may omit files. LAREX stores files with dataset-configured retention and offers
 individual downloads from the evaluation detail page.
+
+## Run outcomes and reports (0.18)
+
+LAREX advertises `capabilities.runReports`. The reporting APIs require it and
+raise `RunReportsUnsupported` on older servers. Existing result calls remain
+supported. Send `completed` normally; LAREX derives `COMPLETED_WITH_ISSUES` from
+recorded failures and warnings, or `FAILED` when every page fails.
+
+```python
+from larex_actions import PageOutcome, PageResultRejected, RunIssue, RunReport
+
+# Recoverable failure: acknowledge the page and continue with later pages.
+await ctx.submit_page_results(
+    page.id, outcome=PageOutcome(pageId=page.id, status="FAILED", message="Invalid input")
+)
+
+# Deliberate skips are counted without making the run have issues.
+await ctx.submit_page_results(
+    page.id, outcome=PageOutcome(pageId=page.id, status="SKIPPED", message="No eligible content")
+)
+
+# Catch only the typed rejection: LAREX already settled this failed page.
+try:
+    await ctx.submit_page_results(page.id, results)
+except PageResultRejected:
+    pass
+
+await ctx.complete(run_report=RunReport(issues=[RunIssue(message="Some pages had low confidence")]))
+```
+
+Each snippet illustrates a separate page submission; a run/page is acknowledged
+only once. Failed and skipped outcomes require a reason and cannot contain files.
+Every page must be acknowledged before incremental completion. Duplicate page
+submissions replay the stored outcome. Fatal errors and cancellation still stop
+processing; do not catch transport, authentication, or arbitrary runtime errors
+as recoverable page failures.
+
+Bulk completion uses `RunReport(pageOutcomes=[...])` with an outcome for every
+selected page. Incremental completion reuses submitted page outcomes and accepts
+only run-level issues in its report. All Action kinds can report run-level issues;
+training, evaluation, and integration do not accept page outcomes. General run
+reports remain separate from evaluation metrics and uploaded result files.
+
+`complete`, `complete_evaluation`, and `upload_results` accept keyword-only
+`run_report`. `heartbeat` and `fail` also accept reports containing run-level issues.
+Report schema version is 1; supported issue severities are `WARNING` and `ERROR`.
+Reports are revalidated before submission and limited to 10 MiB. LAREX computes
+counts and provides the readable report and JSON download in run details.
+
+Deploy LAREX reporting support before releasing this SDK, then upgrade official
+processors to SDK 0.18 and regenerate their lockfiles. SDK 0.17 predates these
+interfaces.

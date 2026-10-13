@@ -25,7 +25,9 @@ from .exceptions import (
     CustomFileResultsUnsupported,
     EvaluationReportsUnsupported,
     IncrementalResultsUnsupported,
+    PageResultRejected,
     ResultSubmissionError,
+    RunReportsUnsupported,
 )
 from .models import (
     ActionCapabilities,
@@ -35,8 +37,10 @@ from .models import (
     ActionKind,
     EvaluationReport,
     HeartbeatResponse,
+    PageOutcome,
     ResultFile,
     ResultStatus,
+    RunReport,
     RunStatus,
 )
 from .results import ResultBuilder
@@ -70,6 +74,7 @@ class ActionClient:
         supports_incremental_page_results: bool = False,
         supports_custom_file_results: bool = False,
         supports_evaluation_reports: bool = False,
+        supports_run_reports: bool = False,
         result_max_attempts: int = 4,
         result_retry_backoff: float = 0.5,
         result_retry_max_backoff: float = 8.0,
@@ -98,6 +103,7 @@ class ActionClient:
         self._supports_incremental_page_results = supports_incremental_page_results
         self._supports_custom_file_results = supports_custom_file_results
         self._supports_evaluation_reports = supports_evaluation_reports
+        self._supports_run_reports = supports_run_reports
         self._incremental_submission_started = False
         if result_max_attempts < 1:
             raise ValueError("result_max_attempts must be at least 1")
@@ -138,6 +144,7 @@ class ActionClient:
             supports_incremental_page_results=payload.capabilities.incremental_page_results,
             supports_custom_file_results=payload.capabilities.custom_file_results,
             supports_evaluation_reports=payload.capabilities.evaluation_reports,
+            supports_run_reports=payload.capabilities.run_reports,
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
@@ -185,6 +192,9 @@ class ActionClient:
         self._supports_evaluation_reports = (
             self._supports_evaluation_reports or action_input.capabilities.evaluation_reports
         )
+        self._supports_run_reports = (
+            self._supports_run_reports or action_input.capabilities.run_reports
+        )
         self._cancel_requested = self._cancel_requested or action_input.cancel_requested
         assert response is not None
         self._log_transport(
@@ -204,6 +214,7 @@ class ActionClient:
         status: RunStatus = "running",
         error_message: str | None = None,
         raise_on_cancel: bool = False,
+        run_report: RunReport | None = None,
     ) -> HeartbeatResponse:
         if status == "running" and raise_on_cancel:
             await self._raise_if_cancel_requested(status_message=status_message, log=log)
@@ -215,6 +226,7 @@ class ActionClient:
             status=status,
             error_message=error_message,
             operation="fail" if status == "failed" else "heartbeat",
+            run_report=run_report,
         )
         if status == "cancelled":
             self._cancel_requested = True
@@ -254,13 +266,23 @@ class ActionClient:
         status: RunStatus = "running",
         error_message: str | None = None,
         operation: str = "heartbeat",
+        run_report: RunReport | None = None,
     ) -> HeartbeatResponse:
+        if run_report is not None:
+            if not self._supports_run_reports:
+                raise RunReportsUnsupported(
+                    "This LAREX server did not advertise runReports support"
+                )
+            run_report = RunReport.model_validate(run_report.model_dump(by_alias=True))
+            if run_report.page_outcomes:
+                raise ValueError("Heartbeat run reports may only contain run-level issues")
         payload: dict[str, Any] = {
             "status": status,
             "progressPercent": progress_percent,
             "statusMessage": status_message,
             "log": log,
             "errorMessage": error_message,
+            "runReport": run_report.model_dump(by_alias=True) if run_report is not None else None,
         }
         started = time.perf_counter()
         response: httpx.Response | None = None
@@ -374,6 +396,8 @@ class ActionClient:
         self,
         results: ResultBuilder | None = None,
         message: str | None = None,
+        *,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
         await self._ensure_results_allowed()
         if self._incremental_submission_started and results is not None and results.files:
@@ -384,12 +408,15 @@ class ActionClient:
             status="completed",
             message=message,
             page_id=None,
+            run_report=run_report,
         )
 
     async def complete_evaluation(
         self,
         report: EvaluationReport,
         message: str | None = None,
+        *,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
         """Complete a dataset evaluation with exactly one structured report."""
         await self._ensure_results_allowed()
@@ -404,13 +431,16 @@ class ActionClient:
             message=message,
             page_id=None,
             evaluation_report=report,
+            run_report=run_report,
         )
 
     async def submit_page_results(
         self,
         page_id: str,
-        results: ResultBuilder,
+        results: ResultBuilder | None = None,
         message: str | None = None,
+        *,
+        outcome: PageOutcome | None = None,
     ) -> Mapping[str, Any]:
         await self._ensure_results_allowed()
         if not self._supports_incremental_page_results:
@@ -419,16 +449,22 @@ class ActionClient:
             )
         if not page_id.strip():
             raise ValueError("page_id must not be blank")
+        results = results or ResultBuilder()
         mismatched_page_ids = {file.page_id for file in results.files if file.page_id != page_id}
         if mismatched_page_ids:
             raise ValueError("Every incremental result file must match page_id")
-        response = await self._post_results(
-            results,
-            operation="submit_page_results",
-            status="running",
-            message=message,
-            page_id=page_id,
-        )
+        try:
+            response = await self._post_results(
+                results,
+                operation="submit_page_results",
+                status="running",
+                message=message,
+                page_id=page_id,
+                page_outcome=outcome,
+            )
+        except PageResultRejected:
+            self._incremental_submission_started = True
+            raise
         self._incremental_submission_started = True
         return response
 
@@ -438,6 +474,7 @@ class ActionClient:
         *,
         status: ResultStatus = "completed",
         message: str | None = None,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
         await self._ensure_results_allowed()
         if status == "running":
@@ -450,6 +487,7 @@ class ActionClient:
             status=status,
             message=message,
             page_id=None,
+            run_report=run_report,
         )
 
     async def fail(
@@ -458,6 +496,7 @@ class ActionClient:
         *,
         log: str | None = None,
         progress_percent: int | None = None,
+        run_report: RunReport | None = None,
     ) -> HeartbeatResponse:
         if self._cancel_requested:
             return await self.cancelled(status_message=message, log=log)
@@ -467,6 +506,7 @@ class ActionClient:
             log=log,
             status="failed",
             error_message=message,
+            run_report=run_report,
         )
 
     async def _ensure_results_allowed(self) -> None:
@@ -492,7 +532,23 @@ class ActionClient:
         message: str | None,
         page_id: str | None,
         evaluation_report: EvaluationReport | None = None,
+        page_outcome: PageOutcome | None = None,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
+        if (page_outcome is not None or run_report is not None) and not self._supports_run_reports:
+            raise RunReportsUnsupported("This LAREX server did not advertise runReports support")
+        if (
+            self._incremental_submission_started
+            and run_report is not None
+            and run_report.page_outcomes
+        ):
+            raise ValueError("Incremental completion uses previously submitted page outcomes")
+        if (
+            self._kind in {"TRAINING", "EVALUATION", "INTEGRATION"}
+            and run_report is not None
+            and run_report.page_outcomes
+        ):
+            raise ValueError("Only PROCESSING actions accept page outcomes in run reports")
         result_files = results.files
         if self._kind == "INTEGRATION" and (
             result_files
@@ -508,7 +564,7 @@ class ActionClient:
             raise ValueError("evaluation reports cannot be submitted with result files")
         if self._kind == "EVALUATION":
             file_mode = self._evaluation_output_mode == "FILES"
-            if status == "running" or page_id is not None:
+            if status == "running" or page_id is not None or page_outcome is not None:
                 raise ValueError(
                     "Evaluation results apply to the whole run; use heartbeats for progress"
                 )
@@ -546,6 +602,8 @@ class ActionClient:
                             message=message,
                             page_id=page_id,
                             evaluation_report=evaluation_report,
+                            page_outcome=page_outcome,
+                            run_report=run_report,
                             exit_stack=exit_stack,
                         ),
                     )
@@ -755,12 +813,14 @@ class ActionContext:
         *,
         log: str | None = None,
         raise_on_cancel: bool = False,
+        run_report: RunReport | None = None,
     ) -> HeartbeatResponse:
         return await self.client.heartbeat(
             progress_percent=progress_percent,
             status_message=status_message,
             log=log,
             raise_on_cancel=raise_on_cancel,
+            run_report=run_report,
         )
 
     async def log(
@@ -899,23 +959,29 @@ class ActionContext:
         self,
         results: ResultBuilder | None = None,
         message: str | None = None,
+        *,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
-        return await self.client.complete(results, message)
+        return await self.client.complete(results, message, run_report=run_report)
 
     async def complete_evaluation(
         self,
         report: EvaluationReport,
         message: str | None = None,
+        *,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
-        return await self.client.complete_evaluation(report, message)
+        return await self.client.complete_evaluation(report, message, run_report=run_report)
 
     async def submit_page_results(
         self,
         page_id: str,
-        results: ResultBuilder,
+        results: ResultBuilder | None = None,
         message: str | None = None,
+        *,
+        outcome: PageOutcome | None = None,
     ) -> Mapping[str, Any]:
-        return await self.client.submit_page_results(page_id, results, message)
+        return await self.client.submit_page_results(page_id, results, message, outcome=outcome)
 
     async def upload_results(
         self,
@@ -923,11 +989,16 @@ class ActionContext:
         *,
         status: ResultStatus = "completed",
         message: str | None = None,
+        run_report: RunReport | None = None,
     ) -> Mapping[str, Any]:
-        return await self.client.upload_results(results, status=status, message=message)
+        return await self.client.upload_results(
+            results, status=status, message=message, run_report=run_report
+        )
 
-    async def fail(self, message: str, *, log: str | None = None) -> HeartbeatResponse:
-        return await self.client.fail(message, log=log)
+    async def fail(
+        self, message: str, *, log: str | None = None, run_report: RunReport | None = None
+    ) -> HeartbeatResponse:
+        return await self.client.fail(message, log=log, run_report=run_report)
 
 
 def _validate_callback_urls(
@@ -1050,7 +1121,15 @@ def _raise_for_result_status(response: httpx.Response) -> None:
         )
         if detail:
             message += f": {detail}"
-        raise ResultSubmissionError(
+        error_type = ResultSubmissionError
+        if response.status_code == 422:
+            try:
+                body = response.json()
+                if isinstance(body, dict) and body.get("code") == "ACTION_PAGE_RESULT_REJECTED":
+                    error_type = PageResultRejected
+            except ValueError:
+                pass
+        raise error_type(
             message,
             request=response.request,
             response=response,

@@ -5,7 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from .models import EvaluationReport, FileType, ResultFile, ResultManifest, ResultStatus
+from .models import (
+    EvaluationReport,
+    FileType,
+    PageOutcome,
+    ResultFile,
+    ResultManifest,
+    ResultStatus,
+    RunReport,
+)
 
 FileContent = bytes | Path
 HttpxFile = tuple[str, tuple[str, bytes | BinaryIO | str, str]]
@@ -150,6 +158,8 @@ class ResultBuilder:
         message: str | None = None,
         page_id: str | None = None,
         evaluation_report: EvaluationReport | None = None,
+        page_outcome: PageOutcome | None = None,
+        run_report: RunReport | None = None,
     ) -> ResultManifest:
         return ResultManifest(
             status=status,
@@ -157,6 +167,8 @@ class ResultBuilder:
             pageId=page_id,
             files=self.files,
             evaluationReport=evaluation_report,
+            pageOutcome=page_outcome,
+            runReport=run_report,
         )
 
     def httpx_files(
@@ -166,6 +178,8 @@ class ResultBuilder:
         message: str | None = None,
         page_id: str | None = None,
         evaluation_report: EvaluationReport | None = None,
+        page_outcome: PageOutcome | None = None,
+        run_report: RunReport | None = None,
         exit_stack: ExitStack,
     ) -> list[HttpxFile]:
         manifest = self.manifest(
@@ -173,6 +187,8 @@ class ResultBuilder:
             message=message,
             page_id=page_id,
             evaluation_report=evaluation_report,
+            page_outcome=page_outcome,
+            run_report=run_report,
         )
         files: list[HttpxFile] = [
             (

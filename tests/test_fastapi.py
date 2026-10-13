@@ -72,6 +72,7 @@ async def test_fastapi_adapter_accepts_authenticated_preflight() -> None:
             "incrementalPageResults": True,
             "customFileResults": True,
             "parameterValueDiscovery": False,
+            "runReports": True,
         },
     }
 

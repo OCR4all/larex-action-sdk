@@ -35,3 +35,11 @@ class EvaluationReportsUnsupported(LarexActionError):
 
 class ResultSubmissionError(httpx.HTTPStatusError, LarexActionError):
     """Raised when LAREX rejects a result callback with a non-success response."""
+
+
+class RunReportsUnsupported(LarexActionError):
+    """The server cannot retain structured outcomes and run reports."""
+
+
+class PageResultRejected(ResultSubmissionError):
+    """LAREX durably recorded invalid page output; processing can continue."""
