@@ -446,7 +446,7 @@ use `ctx.complete_evaluation(report)`. Progress uses heartbeats, and `ctx.fail()
 may omit files. LAREX stores files with dataset-configured retention and offers
 individual downloads from the evaluation detail page.
 
-## Run outcomes and reports (0.18)
+## Run outcomes and reports (0.19)
 
 LAREX advertises `capabilities.runReports`. The reporting APIs require it and
 raise `RunReportsUnsupported` on older servers. Existing result calls remain
@@ -495,5 +495,5 @@ Reports are revalidated before submission and limited to 10 MiB. LAREX computes
 counts and provides the readable report and JSON download in run details.
 
 Deploy LAREX reporting support before releasing this SDK, then upgrade official
-processors to SDK 0.18 and regenerate their lockfiles. SDK 0.17 predates these
+processors to SDK 0.19 and regenerate their lockfiles. SDK 0.18 predates these
 interfaces.
