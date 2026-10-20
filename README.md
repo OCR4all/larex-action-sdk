@@ -35,8 +35,9 @@ from larex_actions.fastapi import create_larex_action_app
 
 async def process(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
-    for page in action_input.pages:
-        async with ctx.step(f"Processing {page.name}", progress_percent=25):
+    total = len(action_input.pages)
+    for index, page in enumerate(action_input.pages, start=1):
+        async with ctx.step(f"Processing page {index}/{total}: {page.name}"):
             await ctx.check_cancelled()
             results = ctx.result_builder()
             if page.xml:
@@ -63,6 +64,10 @@ Incremental page submissions require LAREX to advertise
 `capabilities.incrementalPageResults`. The SDK refuses the submission when an
 older server does not advertise it. Existing processors can continue to call
 `await ctx.complete(results, "Done")` once with a bulk result.
+
+Each accepted page submission updates progress automatically, so this example
+does not pass a percentage to `ctx.step()`. See [Progress Reporting](#progress-reporting)
+for manual updates and the difference between steps and heartbeats.
 
 ## Custom File Results
 
@@ -264,6 +269,57 @@ payload = DispatchVerifier(
 
 You can then pass `payload.model_dump(mode="json", by_alias=True)` to your own
 queue/worker system and use `ActionClient.from_dispatch(payload)` in async workers.
+
+## Progress Reporting
+
+`progress_percent` on `ctx.heartbeat()`, `ctx.log()`, and `ctx.step()` is an
+optional, absolute percentage of the entire Action run. `25` means 25% overall,
+not an increase of 25% or progress within the current page. Omitting it leaves
+the stored percentage unchanged; you can still send status text. LAREX ignores
+decreases, clamps running progress to 0–99%, and sets 100% on completion.
+
+`ctx.heartbeat()` sends one update. `ctx.step()` is an optional wrapper for a
+named phase: it sends start/complete logs and status messages, or a failure
+update before re-raising an exception. It sends the supplied percentage unchanged
+at both entry and exit; it does not allocate a share of the run or send periodic
+heartbeats while the block executes. Long operations still need heartbeats and
+cancellation checks inside the block. Heartbeats alone are sufficient.
+
+`ctx.submit_page_results()` automatically advances progress from the fraction
+of settled pages, including failed and skipped pages, up to 99%. Manual updates
+and automatic page progress share the same overall percentage; the higher value
+wins. There is currently no cap or range to reserve part of automatic page
+progress for preparation or postprocessing.
+
+Manual percentages are useful when uploading all results at the end, or for
+training and other Actions whose progress cannot be inferred from page results.
+For example, a training processor can use 0–10% for preparation, 10–90% for
+epochs, and 90–99% for validation/publication. The functions below represent
+application-specific work:
+
+```python
+async with ctx.step("Preparing training data"):
+    await prepare_training_data()
+
+async with ctx.step("Training", progress_percent=10):
+    for epoch in range(total_epochs):
+        await train_epoch(epoch)
+        await ctx.heartbeat(
+            progress_percent=10 + ((epoch + 1) * 80) // total_epochs,
+            status_message=f"Epoch {epoch + 1}/{total_epochs}",
+            raise_on_cancel=True,
+        )
+
+async with ctx.step("Validating and publishing model", progress_percent=90):
+    await validate_and_publish_model()
+
+await ctx.complete(message="Model published")
+```
+
+Choose a positive `total_epochs`. These percentages are estimates of overall
+work, not elapsed time; omit them if no useful estimate is available. This
+example assumes operations remain responsive through their own heartbeats and
+cancellation checks when they take a long time.
 
 ## Cooperative Cancellation
 
