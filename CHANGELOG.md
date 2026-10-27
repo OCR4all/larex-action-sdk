@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose optional detected image type metadata and accepted image types; validate constrained inputs without changing protocol version 1.
+
 - Support `INTEGRATION` dispatches and inputs on projects/editor selections or datasets.
 - Validate image-only, XML-only, and combined integration inputs without mandatory dataset splits.
 - Reject integration result files, reports, and incremental submissions locally; reuse status/message callbacks.

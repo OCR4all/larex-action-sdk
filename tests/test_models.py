@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -214,3 +216,81 @@ def test_multiple_images_require_explicit_opt_in(kind: str, multiple: bool | Non
     else:
         with pytest.raises(ValidationError, match="Multiple image variants require"):
             ActionInput.model_validate(data)
+
+
+def test_image_types_are_additive_and_use_wire_aliases() -> None:
+    requirement = InputRequirement.model_validate({"level": "REQUIRED", "imageTypes": ["BINARY"]})
+    assert requirement.image_types == ["BINARY"]
+    assert requirement.model_dump(by_alias=True)["imageTypes"] == ["BINARY"]
+    image = ActionFile.model_validate(
+        {
+            "id": "i",
+            "fileName": "page.png",
+            "downloadUrl": "https://example.org/i",
+            "imageType": "BINARY",
+        }
+    )
+    assert image.image_type == "BINARY"
+    assert "imageTypes" not in InputRequirement().model_dump(by_alias=True)
+    assert (
+        ActionFile.model_validate(
+            {"id": "i", "fileName": "page.png", "downloadUrl": "https://example.org/i"}
+        ).image_type
+        is None
+    )
+
+
+@pytest.mark.parametrize("image_type", ["COLOR", "GRAYSCALE", "UNKNOWN", None])
+def test_input_rejects_images_outside_declared_types(image_type: str | None) -> None:
+    with pytest.raises(ValidationError, match="imageTypes"):
+        ActionInput.model_validate(
+            {
+                "protocolVersion": 1,
+                "runId": "run",
+                "processorKey": "processor",
+                "projectId": "project",
+                "inputRequirements": {"images": {"level": "REQUIRED", "imageTypes": ["BINARY"]}},
+                "pages": [
+                    {
+                        "id": "p",
+                        "name": "p",
+                        "images": [
+                            {
+                                "id": "i",
+                                "fileName": "i.png",
+                                "downloadUrl": "https://example.org/i",
+                                "imageType": image_type,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+
+def test_input_accepts_binary_images_and_legacy_unrestricted_metadata() -> None:
+    payload: dict[str, Any] = {
+        "protocolVersion": 1,
+        "runId": "run",
+        "processorKey": "processor",
+        "projectId": "project",
+        "inputRequirements": {"images": {"level": "REQUIRED", "imageTypes": ["BINARY"]}},
+        "pages": [
+            {
+                "id": "p",
+                "name": "p",
+                "images": [
+                    {
+                        "id": "i",
+                        "fileName": "i.png",
+                        "downloadUrl": "https://example.org/i",
+                        "imageType": "BINARY",
+                    }
+                ],
+            }
+        ],
+    }
+    assert ActionInput.model_validate(payload).pages[0].images[0].image_type == "BINARY"
+    payload.pop("inputRequirements")
+    payload["pages"][0]["images"][0].pop("imageType")
+    assert ActionInput.model_validate(payload).pages[0].images[0].image_type is None

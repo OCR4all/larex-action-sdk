@@ -20,6 +20,8 @@ PageOutcomeStatus = Literal["SUCCEEDED", "FAILED", "SKIPPED"]
 FileType = Literal["image", "xml", "file"]
 ActionTarget = Literal["PAGE", "REGION", "TEXT_LINE"]
 InputLevel = Literal["NONE", "OPTIONAL", "REQUIRED"]
+KnownImageType = Literal["COLOR", "GRAYSCALE", "BINARY"]
+ImageType = Literal["COLOR", "GRAYSCALE", "BINARY", "UNKNOWN"]
 ActionKind = Literal["PROCESSING", "TRAINING", "EVALUATION", "INTEGRATION"]
 DatasetSplit = Literal["TRAIN", "VAL", "TEST"]
 MetricFormat = Literal["NUMBER", "INTEGER", "PERCENT"]
@@ -48,6 +50,9 @@ class ActionTargetSelection(LarexModel):
 class InputRequirement(LarexModel):
     level: InputLevel = "NONE"
     multiple: bool = False
+    image_types: list[KnownImageType] = Field(
+        default_factory=list, alias="imageTypes", exclude_if=lambda value: not value
+    )
     required_for_targets: list[ActionTarget] = Field(
         default_factory=list, alias="requiredForTargets"
     )
@@ -252,6 +257,9 @@ class ActionDispatchPayload(LarexModel):
 
 
 class ActionFile(LarexModel):
+    image_type: ImageType | None = Field(
+        default=None, alias="imageType", exclude_if=lambda value: value is None
+    )
     id: str
     file_name: str = Field(alias="fileName")
     variant: str | None = None
@@ -296,6 +304,13 @@ class ActionInput(LarexModel):
 
     @model_validator(mode="after")
     def validate_resource_scope(self) -> ActionInput:
+        accepted_types = self.input_requirements.images.image_types
+        if accepted_types and any(
+            image.image_type not in accepted_types for page in self.pages for image in page.images
+        ):
+            raise ValueError(
+                "Image input type does not satisfy inputRequirements.images.imageTypes"
+            )
         if not self.input_requirements.images.multiple and any(
             len(page.images) > 1 for page in self.pages
         ):

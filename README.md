@@ -567,3 +567,11 @@ counts and provides the readable report and JSON download in run details.
 Deploy LAREX reporting support before releasing this SDK, then upgrade official
 processors using the simplified incremental interface to SDK 0.20 and regenerate
 their lockfiles. Bulk reporting remains available from SDK 0.19.
+
+### Image type requirements
+
+An Action definition may declare `inputs.images.imageTypes: [BINARY]`. LAREX selects only compatible inputs and exposes the effective set as `input.input_requirements.images.image_types`. Each `ActionFile` has optional `image_type` metadata: `COLOR`, `GRAYSCALE`, `BINARY`, or `UNKNOWN`.
+
+Types describe processing image types: RGB files remain color even when their pixels appear grayscale. Grayscale files containing only exact black and white samples are binary regardless of sample depth, including eight-bit 0/255 output from binarizers. Any intermediate gray value makes the image grayscale. One-bit grayscale or black/white palettes can be recognized directly. LAREX detects these values from bytes, independently of variant names, and never converts files automatically.
+
+These are additive protocol version 1 fields. Older payloads default to unrestricted requirements and absent file metadata. When constraints are present, the SDK rejects supplied images with missing, unknown, or incompatible types. Use `image.image_type` to inspect the detected image type; `image.variant` remains the variant name.
