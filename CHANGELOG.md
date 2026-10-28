@@ -10,6 +10,19 @@
 
 <!-- version list -->
 
+## v0.21.0 (2026-10-28)
+
+### Documentation
+
+- Clarify progress reporting and fix processor example
+  ([`3fde495`](https://github.com/OCR4all/larex-action-sdk/commit/3fde495e3ed92ea3f9391024d931177634a6a3bf))
+
+### Features
+
+- **inputs**: Add image type metadata and validation
+  ([`93bf03d`](https://github.com/OCR4all/larex-action-sdk/commit/93bf03dd0bc6536c213ceffff049dfc242f55736))
+
+
 ## v0.20.0 (2026-10-13)
 
 ### Features
