@@ -9,6 +9,10 @@
 - Reject integration result files, reports, and incremental submissions locally; reuse status/message callbacks.
 
 <!-- version list -->
+### Breaking Changes
+
+- Remove `ActionContext.step()`. Call `ctx.heartbeat(progress_percent, status_message, raise_on_cancel=True)` before each phase instead; uncaught exceptions are already reported as failed runs.
+
 
 ## v0.21.0 (2026-10-28)
 

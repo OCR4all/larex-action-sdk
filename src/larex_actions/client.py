@@ -9,8 +9,8 @@ import random
 import re
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
-from contextlib import ExitStack, asynccontextmanager, suppress
+from collections.abc import Collection, Mapping, Sequence
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -853,37 +853,6 @@ class ActionContext:
             status_message=status_message,
             log=message,
             raise_on_cancel=raise_on_cancel,
-        )
-
-    @asynccontextmanager
-    async def step(
-        self,
-        name: str,
-        *,
-        progress_percent: int | None = None,
-    ) -> AsyncGenerator[None]:
-        await self.heartbeat(
-            progress_percent=progress_percent,
-            status_message=name,
-            log=f"step:start {name}",
-            raise_on_cancel=True,
-        )
-        try:
-            yield
-        except ActionCancelled:
-            raise
-        except Exception:
-            await self.heartbeat(
-                progress_percent=progress_percent,
-                status_message=f"{name} failed",
-                log=f"step:failed {name}",
-            )
-            raise
-        await self.heartbeat(
-            progress_percent=progress_percent,
-            status_message=f"{name} complete",
-            log=f"step:complete {name}",
-            raise_on_cancel=True,
         )
 
     async def raise_if_cancelled(self) -> None:

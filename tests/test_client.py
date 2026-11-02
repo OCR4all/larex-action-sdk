@@ -600,27 +600,6 @@ async def test_context_validates_typed_parameters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_step_emits_start_and_complete_logs() -> None:
-    heartbeat_payloads: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        heartbeat_payloads.append(request.content.decode())
-        return httpx.Response(200, json={"cancelRequested": False})
-
-    payload = dispatch_payload_model()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        client = ActionClient.from_dispatch(payload, client=http_client)
-        context = ActionContext(payload=payload, client=client)
-
-        async with context.step("Copy XML", progress_percent=30):
-            pass
-
-    assert len(heartbeat_payloads) == 2
-    assert "step:start Copy XML" in heartbeat_payloads[0]
-    assert "step:complete Copy XML" in heartbeat_payloads[1]
-
-
-@pytest.mark.asyncio
 async def test_context_check_cancelled_acknowledges_cancellation() -> None:
     heartbeat_payloads: list[dict[str, object]] = []
 
@@ -672,35 +651,6 @@ async def test_check_cancelled_short_circuits_after_known_cancellation() -> None
             await context.check_cancelled()
 
     assert [payload["status"] for payload in heartbeat_payloads] == ["cancelled"]
-
-
-@pytest.mark.asyncio
-async def test_context_step_does_not_report_failure_on_cancellation() -> None:
-    heartbeat_payloads: list[dict[str, object]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        heartbeat_payloads.append(json.loads(request.content))
-        return httpx.Response(200, json={"cancelRequested": len(heartbeat_payloads) >= 2})
-
-    payload = dispatch_payload_model()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        client = ActionClient.from_dispatch(payload, client=http_client)
-        context = ActionContext(payload=payload, client=client)
-
-        with pytest.raises(ActionCancelled):
-            async with context.step("Copy XML", progress_percent=30):
-                await context.check_cancelled()
-
-    assert [payload["status"] for payload in heartbeat_payloads] == [
-        "running",
-        "running",
-        "cancelled",
-    ]
-    assert [payload.get("log") for payload in heartbeat_payloads] == [
-        "step:start Copy XML",
-        None,
-        None,
-    ]
 
 
 @pytest.mark.asyncio
