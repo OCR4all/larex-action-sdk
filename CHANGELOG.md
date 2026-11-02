@@ -9,6 +9,20 @@
 - Reject integration result files, reports, and incremental submissions locally; reuse status/message callbacks.
 
 <!-- version list -->
+
+## v0.22.0 (2026-11-02)
+
+### Features
+
+- **context**: Remove ActionContext.step()
+  ([`952eba1`](https://github.com/OCR4all/larex-action-sdk/commit/952eba149eca850f505627ba2a2adef00718419b))
+
+### Breaking Changes
+
+- **context**: ActionContext.step() is removed. Call ctx.heartbeat(progress_percent, status_message,
+  raise_on_cancel=True) before each phase instead.
+
+
 ### Breaking Changes
 
 - Remove `ActionContext.step()`. Call `ctx.heartbeat(progress_percent, status_message, raise_on_cancel=True)` before each phase instead; uncaught exceptions are already reported as failed runs.
