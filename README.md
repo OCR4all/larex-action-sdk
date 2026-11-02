@@ -37,17 +37,19 @@ async def process(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
     total = len(action_input.pages)
     for index, page in enumerate(action_input.pages, start=1):
-        async with ctx.step(f"Processing page {index}/{total}: {page.name}"):
-            await ctx.check_cancelled()
-            results = ctx.result_builder()
-            if page.xml:
-                xml_bytes = await ctx.download_bytes(page.xml[0])
-                results.add_xml_bytes(
-                    page_id=page.id,
-                    content=xml_bytes,
-                    file_name=f"{page.name}-processed.xml",
-                )
-            await ctx.submit_page_results(page.id, results, f"Finished {page.name}")
+        await ctx.heartbeat(
+            status_message=f"Processing page {index}/{total}: {page.name}",
+            raise_on_cancel=True,
+        )
+        results = ctx.result_builder()
+        if page.xml:
+            xml_bytes = await ctx.download_bytes(page.xml[0])
+            results.add_xml_bytes(
+                page_id=page.id,
+                content=xml_bytes,
+                file_name=f"{page.name}-processed.xml",
+            )
+        await ctx.submit_page_results(page.id, results, f"Finished {page.name}")
 
     await ctx.complete(message="Done")
 
@@ -66,8 +68,8 @@ older server does not advertise it. Existing processors can continue to call
 `await ctx.complete(results, "Done")` once with a bulk result.
 
 Each accepted page submission updates progress automatically, so this example
-does not pass a percentage to `ctx.step()`. See [Progress Reporting](#progress-reporting)
-for manual updates and the difference between steps and heartbeats.
+does not pass a percentage to `ctx.heartbeat()`. See [Progress Reporting](#progress-reporting)
+for manual updates.
 
 ## Custom File Results
 
@@ -272,18 +274,16 @@ queue/worker system and use `ActionClient.from_dispatch(payload)` in async worke
 
 ## Progress Reporting
 
-`progress_percent` on `ctx.heartbeat()`, `ctx.log()`, and `ctx.step()` is an
+`progress_percent` on `ctx.heartbeat()` and `ctx.log()` is an
 optional, absolute percentage of the entire Action run. `25` means 25% overall,
 not an increase of 25% or progress within the current page. Omitting it leaves
 the stored percentage unchanged; you can still send status text. LAREX ignores
 decreases, clamps running progress to 0–99%, and sets 100% on completion.
 
-`ctx.heartbeat()` sends one update. `ctx.step()` is an optional wrapper for a
-named phase: it sends start/complete logs and status messages, or a failure
-update before re-raising an exception. It sends the supplied percentage unchanged
-at both entry and exit; it does not allocate a share of the run or send periodic
-heartbeats while the block executes. Long operations still need heartbeats and
-cancellation checks inside the block. Heartbeats alone are sufficient.
+Each `ctx.heartbeat()` call sends one update; the SDK does not heartbeat in the
+background. Long operations need their own periodic heartbeats and cancellation
+checks. Uncaught exceptions are reported as a failed run by the runtime, so there
+is no need to send a separate failure update.
 
 `ctx.submit_page_results()` automatically advances progress from the fraction
 of settled pages, including failed and skipped pages, up to 99%. Manual updates
@@ -298,20 +298,20 @@ epochs, and 90–99% for validation/publication. The functions below represent
 application-specific work:
 
 ```python
-async with ctx.step("Preparing training data"):
-    await prepare_training_data()
+await ctx.heartbeat(0, "Preparing training data", raise_on_cancel=True)
+await prepare_training_data()
 
-async with ctx.step("Training", progress_percent=10):
-    for epoch in range(total_epochs):
-        await train_epoch(epoch)
-        await ctx.heartbeat(
-            progress_percent=10 + ((epoch + 1) * 80) // total_epochs,
-            status_message=f"Epoch {epoch + 1}/{total_epochs}",
-            raise_on_cancel=True,
-        )
+await ctx.heartbeat(10, "Training", raise_on_cancel=True)
+for epoch in range(total_epochs):
+    await train_epoch(epoch)
+    await ctx.heartbeat(
+        progress_percent=10 + ((epoch + 1) * 80) // total_epochs,
+        status_message=f"Epoch {epoch + 1}/{total_epochs}",
+        raise_on_cancel=True,
+    )
 
-async with ctx.step("Validating and publishing model", progress_percent=90):
-    await validate_and_publish_model()
+await ctx.heartbeat(90, "Validating and publishing model", raise_on_cancel=True)
+await validate_and_publish_model()
 
 await ctx.complete(message="Model published")
 ```
