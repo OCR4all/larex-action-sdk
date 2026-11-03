@@ -248,21 +248,25 @@ def _dataset_page(images: list[dict[str, Any]]) -> dict[str, Any]:
         "sourcePageId": "page-1",
         "split": "TEST",
         "images": images,
-        "xml": [{"id": "xml-1", "fileName": "page.xml", "downloadUrl": "https://larex.example/xml"}],
+        "xml": [
+            {"id": "xml-1", "fileName": "page.xml", "downloadUrl": "https://larex.example/xml"}
+        ],
     }
 
 
 @pytest.mark.parametrize("level", ["NONE", "OPTIONAL"])
 def test_evaluation_input_accepts_xml_only_items(level: str) -> None:
-    action_input = ActionInput.model_validate({
-        "protocolVersion": 1,
-        "runId": "run-1",
-        "processorKey": PROCESSOR_ID,
-        "kind": "EVALUATION",
-        "datasetId": "dataset-1",
-        "inputRequirements": {"images": {"level": level}, "xml": {"level": "REQUIRED"}},
-        "pages": [_dataset_page([])],
-    })
+    action_input = ActionInput.model_validate(
+        {
+            "protocolVersion": 1,
+            "runId": "run-1",
+            "processorKey": PROCESSOR_ID,
+            "kind": "EVALUATION",
+            "datasetId": "dataset-1",
+            "inputRequirements": {"images": {"level": level}, "xml": {"level": "REQUIRED"}},
+            "pages": [_dataset_page([])],
+        }
+    )
     assert action_input.pages[0].images == []
 
 
