@@ -163,7 +163,7 @@ def test_dataset_input_supports_multiple_images_and_requires_one_xml(
         ],
     }
     if image_count == 0 or xml_count != 1:
-        with pytest.raises(ValidationError, match="at least one image and exactly one XML"):
+        with pytest.raises(ValidationError, match=r"at least one image|exactly one XML"):
             ActionInput.model_validate(data)
     else:
         parsed = ActionInput.model_validate(data)

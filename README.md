@@ -378,7 +378,9 @@ Action as `kind: TRAINING` or `kind: EVALUATION` in LAREX. Their payloads expose
 `dataset_id` instead of `project_id`, and dispatches include `dataset_item_ids`.
 Each pulled input page represents a dataset item: `page.id` is its item ID,
 `page.source_page_id` identifies the source page, and `page.split` is `TRAIN`,
-`VAL`, or `TEST`. Each item contains one frozen image by default and exactly one PAGE XML file.
+`VAL`, or `TEST`. Each item contains exactly one PAGE XML file. Training items always
+contain one frozen image by default; evaluation items contain images according to
+`inputRequirements.images.level` (`REQUIRED`, `OPTIONAL`, or `NONE` for XML-only evaluation).
 Actions declaring `inputs.images.multiple: true` can receive multiple frozen images
 per item. The SDK checks this capability in `inputRequirements.images.multiple`
 for every Action kind.
@@ -397,7 +399,7 @@ from larex_actions.fastapi import create_larex_action_app
 
 async def evaluate(ctx: ActionContext) -> None:
     action_input = await ctx.pull_input()
-    # Download image/XML pairs and compute metrics here.
+    # Download XML (and images, if declared) and compute metrics here.
     await ctx.check_cancelled()
     report = EvaluationReport(
         profile="larex.ocr-recognition",
