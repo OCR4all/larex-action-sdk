@@ -345,13 +345,17 @@ class ActionInput(LarexModel):
                 seen_ids.add(page.id)
                 if not page.source_page_id or page.split is None:
                     raise ValueError("dataset Action inputs require sourcePageId and split")
-                # Dataset actions always require frozen images and exactly one XML.
+                # Dataset actions always require exactly one XML. Training always
+                # freezes images; evaluation only when it declares them required.
                 # Image multiplicity is checked above for every Action kind.
-                if not page.images or len(page.xml) != 1:
-                    raise ValueError(
-                        "dataset Action inputs require at least one image "
-                        "and exactly one XML file per item"
-                    )
+                if len(page.xml) != 1:
+                    raise ValueError("dataset Action inputs require exactly one XML file per item")
+                images_required = (
+                    self.kind == "TRAINING"
+                    or self.input_requirements.images.level_for("PAGE") == "REQUIRED"
+                )
+                if images_required and not page.images:
+                    raise ValueError("dataset Action inputs require at least one image per item")
         elif not self.project_id or self.dataset_id:
             raise ValueError("PROCESSING inputs require projectId and no datasetId")
         return self

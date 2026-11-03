@@ -237,7 +237,47 @@ def test_dataset_input_requires_frozen_pair_and_split(kind: str) -> None:
         "datasetId": "dataset-1",
         "pages": [{"id": "item-1", "name": "Page", "sourcePageId": "page-1", "split": "TEST"}],
     }
-    with pytest.raises(ValidationError, match="at least one image and exactly one XML"):
+    with pytest.raises(ValidationError, match="exactly one XML"):
+        ActionInput.model_validate(data)
+
+
+def _dataset_page(images: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": "item-1",
+        "name": "Page",
+        "sourcePageId": "page-1",
+        "split": "TEST",
+        "images": images,
+        "xml": [{"id": "xml-1", "fileName": "page.xml", "downloadUrl": "https://larex.example/xml"}],
+    }
+
+
+@pytest.mark.parametrize("level", ["NONE", "OPTIONAL"])
+def test_evaluation_input_accepts_xml_only_items(level: str) -> None:
+    action_input = ActionInput.model_validate({
+        "protocolVersion": 1,
+        "runId": "run-1",
+        "processorKey": PROCESSOR_ID,
+        "kind": "EVALUATION",
+        "datasetId": "dataset-1",
+        "inputRequirements": {"images": {"level": level}, "xml": {"level": "REQUIRED"}},
+        "pages": [_dataset_page([])],
+    })
+    assert action_input.pages[0].images == []
+
+
+@pytest.mark.parametrize("kind", ["TRAINING", "EVALUATION"])
+def test_dataset_input_requires_images_when_required(kind: str) -> None:
+    data = {
+        "protocolVersion": 1,
+        "runId": "run-1",
+        "processorKey": PROCESSOR_ID,
+        "kind": kind,
+        "datasetId": "dataset-1",
+        "inputRequirements": {"images": {"level": "REQUIRED"}, "xml": {"level": "REQUIRED"}},
+        "pages": [_dataset_page([])],
+    }
+    with pytest.raises(ValidationError, match="at least one image"):
         ActionInput.model_validate(data)
 
 

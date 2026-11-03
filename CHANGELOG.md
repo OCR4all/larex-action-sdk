@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept XML-only `EVALUATION` items when `inputRequirements.images.level` is `OPTIONAL` or `NONE`; training items still require images.
 - Expose optional detected image type metadata and accepted image types; validate constrained inputs without changing protocol version 1.
 
 - Support `INTEGRATION` dispatches and inputs on projects/editor selections or datasets.
