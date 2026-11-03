@@ -11,6 +11,19 @@
 
 <!-- version list -->
 
+## v0.23.0 (2026-11-03)
+
+### Chores
+
+- Run ruff format
+  ([`93bab26`](https://github.com/OCR4all/larex-action-sdk/commit/93bab26dae9a06bcfa20f97e21ba37f488dec038))
+
+### Features
+
+- **inputs**: Accept XML-only evaluation items
+  ([`adac48f`](https://github.com/OCR4all/larex-action-sdk/commit/adac48fcbacc650601fa1ffd444ee51d51a715d2))
+
+
 ## v0.22.0 (2026-11-02)
 
 ### Features
