@@ -13,6 +13,14 @@
 
 <!-- version list -->
 
+## v0.24.0 (2026-11-10)
+
+### Features
+
+- **parameters**: Let providers mark default choices
+  ([`3f6193a`](https://github.com/OCR4all/larex-action-sdk/commit/3f6193a40b36cc8d48518b26b63714a3cada4415))
+
+
 ## v0.23.0 (2026-11-03)
 
 ### Chores
