@@ -153,6 +153,7 @@ class PreflightResponse(LarexModel):
 class ParameterChoice(LarexModel):
     value: Any
     label: str
+    default: bool = Field(default=False, exclude_if=lambda value: value is False)
 
     @field_validator("value")
     @classmethod
@@ -176,11 +177,16 @@ class ParameterChoice(LarexModel):
         return value
 
 
+class ParameterValuesCapabilities(LarexModel):
+    parameter_choice_defaults: bool = Field(default=False, alias="parameterChoiceDefaults")
+
+
 class ParameterValuesRequest(LarexModel):
     protocol_version: Literal[1] = Field(alias="protocolVersion")
     request_id: str = Field(alias="requestId")
     processor_id: str = Field(alias="processorId")
     providers: list[str]
+    capabilities: ParameterValuesCapabilities = Field(default_factory=ParameterValuesCapabilities)
 
     @model_validator(mode="after")
     def validate_providers(self) -> ParameterValuesRequest:

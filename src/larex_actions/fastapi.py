@@ -161,6 +161,11 @@ def create_larex_action_app(
                 name: await _invoke_parameter_value_provider(resolved_providers[name])
                 for name in payload.providers
             }
+            if not payload.capabilities.parameter_choice_defaults:
+                values = {
+                    name: [choice.model_copy(update={"default": False}) for choice in choices]
+                    for name, choices in values.items()
+                }
             response = ParameterValuesResponse(
                 requestId=payload.request_id,
                 processorId=processor_id,

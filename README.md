@@ -203,6 +203,19 @@ advertises `parameterValueDiscovery` during preflight, and limits each provider 
 1,000 unique primitive choices. LAREX calls providers again immediately before a
 run so returned values are an authoritative allowlist rather than UI suggestions.
 
+Mark the choice LAREX should preselect with `default=True`:
+
+```python
+ParameterChoice(value="model-a", label="Model A", default=True)
+```
+
+LAREX uses a marked choice when the Action YAML sets no `default` for the parameter,
+or when that `default` is no longer among the returned choices. Mark one choice for
+a single-value parameter; LAREX rejects the response if several are marked. A
+parameter with `multiple: true` may have several marked choices. The SDK sends the
+flag only to LAREX versions that announce support for it, so providers can set it
+without breaking older installations, which keep their previous behaviour.
+
 Capabilities default to both SDK-supported result features. Override them when a
 processor intentionally implements a smaller surface:
 
