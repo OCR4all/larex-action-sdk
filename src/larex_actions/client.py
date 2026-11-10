@@ -1176,17 +1176,17 @@ def _effective_port(parsed: SplitResult) -> int:
 
 def _is_local_or_private_host(host: str) -> bool:
     normalized = host.lower()
-    if (
-        normalized == "localhost"
-        or normalized.endswith(".localhost")
-        or normalized.endswith(".local")
-        or "." not in normalized
-    ):
-        return True
     try:
         address = ipaddress.ip_address(normalized)
     except ValueError:
-        return False
+        return (
+            normalized == "localhost"
+            or normalized.endswith(".localhost")
+            or normalized.endswith(".local")
+            or ("." not in normalized and ":" not in normalized)
+        )
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
     return address.is_loopback or address.is_private or address.is_link_local
 
 

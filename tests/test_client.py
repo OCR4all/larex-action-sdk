@@ -579,6 +579,31 @@ def test_client_allows_insecure_local_callback_url() -> None:
     assert client.pull_url.startswith("http://app:8080/")
 
 
+@pytest.mark.parametrize("host", ["[2001:4860:4860::8888]", "[::ffff:8.8.8.8]"])
+def test_client_rejects_insecure_public_ipv6_callback_url(host: str) -> None:
+    with pytest.raises(ActionUrlSecurityError, match="https"):
+        ActionClient.from_dispatch(
+            dispatch_payload_model(
+                pullUrl=f"http://{host}/public/actions/runs/run-1/input",
+                heartbeatUrl=f"http://{host}/public/actions/runs/run-1/heartbeat",
+                resultUrl=f"http://{host}/public/actions/runs/run-1/results",
+            )
+        )
+
+
+@pytest.mark.parametrize("host", ["[::1]", "[fd00::1]", "[fe80::1]", "[::ffff:10.0.0.1]"])
+def test_client_allows_insecure_local_ipv6_callback_url(host: str) -> None:
+    client = ActionClient.from_dispatch(
+        dispatch_payload_model(
+            pullUrl=f"http://{host}:8080/public/actions/runs/run-1/input",
+            heartbeatUrl=f"http://{host}:8080/public/actions/runs/run-1/heartbeat",
+            resultUrl=f"http://{host}:8080/public/actions/runs/run-1/results",
+        )
+    )
+
+    assert client.pull_url.startswith(f"http://{host}:8080/")
+
+
 def test_client_rejects_callback_origin_outside_allowlist() -> None:
     with pytest.raises(ActionUrlSecurityError, match="not in allowed_callback_origins"):
         ActionClient.from_dispatch(
