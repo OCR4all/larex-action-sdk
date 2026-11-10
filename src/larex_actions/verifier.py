@@ -151,7 +151,7 @@ class DispatchVerifier:
             raise DispatchVerificationError("Processor id mismatch")
 
         expected_body_hash = _b64url(hashlib.sha256(raw_body).digest())
-        if not hmac.compare_digest(expected_body_hash, body_hash):
+        if not _constant_time_equals(expected_body_hash, body_hash):
             raise DispatchVerificationError("Body hash mismatch")
 
         canonical = canonical_dispatch_request(
@@ -170,7 +170,7 @@ class DispatchVerifier:
                 hashlib.sha256,
             ).digest()
         )
-        if not hmac.compare_digest(expected_signature, signature):
+        if not _constant_time_equals(expected_signature, signature):
             raise DispatchVerificationError("Dispatch signature mismatch")
 
         return raw_body, header_run, header_processor, timestamp, nonce
@@ -243,6 +243,13 @@ def _required_header(headers: Mapping[str, str], name: str) -> str:
     if not value:
         raise DispatchVerificationError(f"Missing dispatch header: {name}")
     return value
+
+
+def _constant_time_equals(expected: str, actual: str) -> bool:
+    return hmac.compare_digest(
+        expected.encode("utf-8"),
+        actual.encode("utf-8", errors="surrogatepass"),
+    )
 
 
 def _b64url(value: bytes) -> str:

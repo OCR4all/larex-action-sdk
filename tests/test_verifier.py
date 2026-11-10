@@ -26,7 +26,9 @@ def test_verifies_valid_dispatch() -> None:
     ("header", "value"),
     [
         ("X-LAREX-Action-Signature", "v1=bad"),
+        ("X-LAREX-Action-Signature", "v1=é"),
         ("X-LAREX-Action-Body-SHA256", "bad"),
+        ("X-LAREX-Action-Body-SHA256", "é"),
         ("X-LAREX-Action-Processor", "other"),
         ("X-LAREX-Action-Run-Id", "other"),
     ],
