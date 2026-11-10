@@ -725,6 +725,33 @@ async def test_context_run_subprocess_terminates_on_cancellation(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_context_run_subprocess_terminates_on_timeout() -> None:
+    heartbeat_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        if heartbeat_count > 50:
+            return httpx.Response(500)
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client)
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(TimeoutError, match="Subprocess timed out"):
+            await context.run_subprocess(
+                [sys.executable, "-c", "import time\ntime.sleep(60)"],
+                timeout=0.3,
+                terminate_grace_seconds=1.0,
+                cancel_poll_seconds=0.1,
+            )
+
+    assert heartbeat_count <= 10
+
+
+@pytest.mark.asyncio
 async def test_client_rejects_cross_origin_download_url() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

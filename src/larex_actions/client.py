@@ -910,25 +910,27 @@ class ActionContext:
 
         try:
             while True:
+                wait_timeout = _subprocess_wait_timeout(
+                    loop=loop,
+                    deadline=deadline,
+                    cancel_poll_seconds=cancel_poll_seconds,
+                    timeout=timeout,
+                    command_name=normalized_command[0],
+                )
                 try:
                     stdout, stderr = await _wait_for_subprocess_output(
                         communicate_task,
-                        timeout=_subprocess_wait_timeout(
-                            loop=loop,
-                            deadline=deadline,
-                            cancel_poll_seconds=cancel_poll_seconds,
-                            timeout=timeout,
-                            command_name=normalized_command[0],
-                        ),
-                    )
-                    return ActionSubprocessResult(
-                        args=normalized_command,
-                        returncode=process.returncode or 0,
-                        stdout=stdout,
-                        stderr=stderr,
+                        timeout=wait_timeout,
                     )
                 except TimeoutError:
                     await self.check_cancelled()
+                    continue
+                return ActionSubprocessResult(
+                    args=normalized_command,
+                    returncode=process.returncode or 0,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
         except BaseException:
             await _terminate_subprocess(process, terminate_grace_seconds)
             raise
