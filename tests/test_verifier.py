@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -93,6 +94,31 @@ def test_rejects_replayed_nonce() -> None:
     body, headers = signed_dispatch(nonce="same-nonce")
     with pytest.raises(DispatchVerificationError):
         verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+
+def test_rejects_replay_for_as_long_as_the_timestamp_stays_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verifier = DispatchVerifier(processor_id=PROCESSOR_ID, dispatch_secret=SECRET)
+    timestamp = (datetime.now(UTC) + timedelta(seconds=290)).isoformat()
+    body, headers = signed_dispatch(nonce="skewed-nonce", timestamp=timestamp)
+    verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+    received_at = time.monotonic()
+    monkeypatch.setattr("larex_actions.nonce.time.monotonic", lambda: received_at + 301)
+
+    with pytest.raises(DispatchVerificationError, match="already used"):
+        verifier.verify(method="POST", path_and_query="/dispatch", headers=headers, body=body)
+
+
+def test_rejects_nonce_store_that_expires_before_the_replay_window() -> None:
+    with pytest.raises(ValueError, match="at least twice max_clock_skew_seconds"):
+        DispatchVerifier(
+            processor_id=PROCESSOR_ID,
+            dispatch_secret=SECRET,
+            nonce_store=NonceStore(ttl_seconds=300),
+            max_clock_skew_seconds=300,
+        )
 
 
 def test_rejected_dispatch_does_not_burn_nonce() -> None:

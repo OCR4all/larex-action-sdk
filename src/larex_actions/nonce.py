@@ -9,7 +9,7 @@ from .exceptions import DispatchVerificationError
 
 @dataclass
 class NonceStore:
-    ttl_seconds: int = 300
+    ttl_seconds: int = 600
     max_size: int = 10_000
     _seen: dict[str, float] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)

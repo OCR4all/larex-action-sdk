@@ -39,7 +39,17 @@ class DispatchVerifier:
             raise ValueError("dispatch_secret must not be blank")
         self.processor_id = processor_id
         self._dispatch_secret = dispatch_secret
-        self.nonce_store = nonce_store or NonceStore(ttl_seconds=max_clock_skew_seconds)
+        if max_clock_skew_seconds <= 0:
+            raise ValueError("max_clock_skew_seconds must be positive")
+        replay_window_seconds = 2 * max_clock_skew_seconds
+        if nonce_store is None:
+            nonce_store = NonceStore(ttl_seconds=replay_window_seconds)
+        elif nonce_store.ttl_seconds < replay_window_seconds:
+            raise ValueError(
+                "nonce_store.ttl_seconds must be at least twice max_clock_skew_seconds "
+                f"({replay_window_seconds})"
+            )
+        self.nonce_store = nonce_store
         self.max_clock_skew_seconds = max_clock_skew_seconds
 
     def verify(
