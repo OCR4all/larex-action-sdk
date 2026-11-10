@@ -682,9 +682,12 @@ async def test_context_run_subprocess_terminates_on_cancellation(tmp_path: Path)
     heartbeat_payloads: list[dict[str, object]] = []
     sentinel_path = tmp_path / "sentinel.txt"
 
+    def subprocess_handles_sigterm() -> bool:
+        return sentinel_path.exists() and sentinel_path.read_text(encoding="utf-8") == "started"
+
     def handler(request: httpx.Request) -> httpx.Response:
         heartbeat_payloads.append(json.loads(request.content))
-        return httpx.Response(200, json={"cancelRequested": len(heartbeat_payloads) >= 2})
+        return httpx.Response(200, json={"cancelRequested": subprocess_handles_sigterm()})
 
     payload = dispatch_payload_model()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
@@ -699,26 +702,26 @@ async def test_context_run_subprocess_terminates_on_cancellation(tmp_path: Path)
                     (
                         "import pathlib, signal, sys, time\n"
                         "sentinel = pathlib.Path(sys.argv[1])\n"
-                        "sentinel.write_text('started', encoding='utf-8')\n"
                         "def handle(*_args):\n"
                         "    sentinel.write_text('terminated', encoding='utf-8')\n"
                         "    raise SystemExit(0)\n"
                         "signal.signal(signal.SIGTERM, handle)\n"
+                        "sentinel.write_text('started', encoding='utf-8')\n"
                         "while True:\n"
                         "    time.sleep(1)\n"
                     ),
                     str(sentinel_path),
                 ],
+                timeout=30.0,
                 terminate_grace_seconds=1.0,
                 cancel_poll_seconds=0.05,
             )
 
     assert sentinel_path.read_text(encoding="utf-8") == "terminated"
-    assert [payload["status"] for payload in heartbeat_payloads] == [
-        "running",
-        "running",
-        "cancelled",
-    ]
+    statuses = [payload["status"] for payload in heartbeat_payloads]
+    assert len(statuses) >= 3
+    assert set(statuses[:-1]) == {"running"}
+    assert statuses[-1] == "cancelled"
 
 
 @pytest.mark.asyncio
