@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `ParameterChoice.default` so a parameter value provider can mark the choice LAREX preselects. The flag is only sent when the discovery request announces `capabilities.parameterChoiceDefaults`, so older LAREX versions are unaffected.
+
 - Accept XML-only `EVALUATION` items when `inputRequirements.images.level` is `OPTIONAL` or `NONE`; training items still require images.
 - Expose optional detected image type metadata and accepted image types; validate constrained inputs without changing protocol version 1.
 

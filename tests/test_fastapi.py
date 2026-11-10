@@ -141,6 +141,47 @@ async def test_fastapi_adapter_supports_sync_provider_on_prefixed_route() -> Non
 
 
 @pytest.mark.asyncio
+async def test_fastapi_adapter_sends_choice_defaults_only_when_larex_supports_them() -> None:
+    async def process(_ctx: ActionContext) -> None:
+        raise AssertionError("discovery must not run the processor")
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        parameter_value_providers={
+            "models": lambda: [
+                ParameterChoice(value="model-a", label="Model A", default=True),
+                {"value": "model-b", "label": "Model B"},
+            ]
+        },
+    )
+    legacy_body, legacy_headers = signed_parameter_values()
+    body, headers = signed_parameter_values(
+        payload=parameter_values_payload(
+            capabilities={"parameterChoiceDefaults": True, "futureCapability": True}
+        ),
+        nonce="parameter-values-nonce-2",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        legacy = await client.post("/parameter-values", content=legacy_body, headers=legacy_headers)
+        response = await client.post("/parameter-values", content=body, headers=headers)
+
+    assert legacy.json()["values"]["models"] == [
+        {"value": "model-a", "label": "Model A"},
+        {"value": "model-b", "label": "Model B"},
+    ]
+    assert response.json()["values"]["models"] == [
+        {"value": "model-a", "label": "Model A", "default": True},
+        {"value": "model-b", "label": "Model B"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fastapi_adapter_rejects_unknown_or_duplicate_parameter_values() -> None:
     async def process(_ctx: ActionContext) -> None:
         raise AssertionError("discovery must not run the processor")
