@@ -13,6 +13,28 @@
 
 <!-- version list -->
 
+## v0.24.1 (2026-11-10)
+
+### Bug Fixes
+
+- **client**: Enforce the run_subprocess timeout
+  ([`92aedf1`](https://github.com/OCR4all/larex-action-sdk/commit/92aedf16b011abf26a7cb143414c5ce7e9776b62))
+
+- **security**: Keep nonces for the whole timestamp validity window
+  ([`9007657`](https://github.com/OCR4all/larex-action-sdk/commit/9007657b2757fd83a1db4dd95c269209677daa4b))
+
+- **security**: Stop treating public IPv6 hosts as local
+  ([`f35846b`](https://github.com/OCR4all/larex-action-sdk/commit/f35846b5bebfd4d36660ce1a4089d47f0f9a70e3))
+
+- **verifier**: Reject non-ASCII signature headers with 401
+  ([`c2e226b`](https://github.com/OCR4all/larex-action-sdk/commit/c2e226ba749a298f6e63bb6972606f6e0c438d88))
+
+### Testing
+
+- **client**: Wait for the subprocess before cancelling it
+  ([`3c1b91d`](https://github.com/OCR4all/larex-action-sdk/commit/3c1b91d95cb1f899af8411557461cb0b66b3bf57))
+
+
 ## v0.24.0 (2026-11-10)
 
 ### Features
