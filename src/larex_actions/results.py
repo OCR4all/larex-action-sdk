@@ -227,6 +227,11 @@ class ResultBuilder:
             raise ValueError("file_name must not be blank")
         if type_ == "image" and not variant:
             raise ValueError("variant must not be blank")
+        if type_ == "image" and any(
+            file.type == "image" and file.page_id == page_id and file.variant == variant
+            for file in self._files
+        ):
+            raise ValueError(f"page {page_id} already has an image with variant {variant}")
         field_name = f"file_{len(self._files)}"
         self._files.append(
             _PendingResultFile(

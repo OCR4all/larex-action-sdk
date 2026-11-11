@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject a second image with the same page and variant in `ResultBuilder` and `ResultManifest`. One page can return several image variants, such as binary and grayscale.
+
 - Add `ParameterChoice.default` so a parameter value provider can mark the choice LAREX preselects. The flag is only sent when the discovery request announces `capabilities.parameterChoiceDefaults`, so older LAREX versions are unaffected.
 
 - Accept XML-only `EVALUATION` items when `inputRequirements.images.level` is `OPTIONAL` or `NONE`; training items still require images.

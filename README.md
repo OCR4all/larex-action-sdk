@@ -71,6 +71,32 @@ Each accepted page submission updates progress automatically, so this example
 does not pass a percentage to `ctx.heartbeat()`. See [Progress Reporting](#progress-reporting)
 for manual updates.
 
+## Image Results
+
+A page can receive several images in one submission, for example a binarizer
+that writes both a binary and a normalized grayscale image. Give every image of
+a page its own variant:
+
+```python
+results = ctx.result_builder()
+results.add_image_path(page.id, out_dir / "page.bin.png", variant="binary", mime_type="image/png")
+results.add_image_path(page.id, out_dir / "page.nrm.png", variant="grayscale", mime_type="image/png")
+await ctx.submit_page_results(page.id, results)
+```
+
+Each variant replaces the page's existing image with the same name. The SDK
+rejects a second image with the same page and variant before uploading. List
+every variant the processor may return in the Action YAML:
+
+```yaml
+outputs:
+  images:
+    enabled: true
+    variants: [binary, grayscale]
+```
+
+LAREX rejects image results whose variant is not declared.
+
 ## Custom File Results
 
 LAREX servers that advertise `capabilities.customFileResults` accept arbitrary

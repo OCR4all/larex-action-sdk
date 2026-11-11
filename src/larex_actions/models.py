@@ -560,6 +560,13 @@ class ResultManifest(LarexModel):
         return value.model_dump(by_alias=True) if isinstance(value, BaseModel) else value
 
     @model_validator(mode="after")
+    def validate_image_variants(self) -> ResultManifest:
+        keys = [(file.page_id, file.variant) for file in self.files if file.type == "image"]
+        if len(keys) != len(set(keys)):
+            raise ValueError("image results must use a distinct variant per page")
+        return self
+
+    @model_validator(mode="after")
     def validate_run_reporting(self) -> ResultManifest:
         if self.page_outcome is not None:
             if self.status != "running" or self.page_id != self.page_outcome.page_id:
