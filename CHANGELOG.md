@@ -15,6 +15,14 @@
 
 <!-- version list -->
 
+## v0.25.0 (2026-11-11)
+
+### Features
+
+- **results**: Reject duplicate image variants per page
+  ([`6540b8f`](https://github.com/OCR4all/larex-action-sdk/commit/6540b8f75be133b803393debea4d7b26f5f4ebc2))
+
+
 ## v0.24.1 (2026-11-10)
 
 ### Bug Fixes
