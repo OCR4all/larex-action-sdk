@@ -17,6 +17,14 @@
 
 <!-- version list -->
 
+## v0.26.0 (2026-11-17)
+
+### Features
+
+- **fastapi**: Remove /ready route
+  ([`e393a13`](https://github.com/OCR4all/larex-action-sdk/commit/e393a13f5b90f736fb3bfd11ffdde916057af014))
+
+
 ## v0.25.0 (2026-11-11)
 
 ### Features
