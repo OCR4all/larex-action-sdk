@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the `/ready` route. LAREX never polled it, and dispatches beyond `max_concurrent_runs` are queued rather than refused.
+
 - Reject a second image with the same page and variant in `ResultBuilder` and `ResultManifest`. One page can return several image variants, such as binary and grayscale.
 
 - Add `ParameterChoice.default` so a parameter value provider can mark the choice LAREX preselects. The flag is only sent when the discovery request announces `capabilities.parameterChoiceDefaults`, so older LAREX versions are unaffected.

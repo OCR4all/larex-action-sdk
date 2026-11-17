@@ -12,6 +12,7 @@ from larex_actions.fastapi import create_larex_action_app
 from .conftest import (
     PROCESSOR_ID,
     SECRET,
+    dispatch_payload,
     parameter_values_payload,
     signed_dispatch,
     signed_parameter_values,
@@ -259,13 +260,19 @@ async def test_fastapi_adapter_rejects_preflight_with_wrong_secret() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fastapi_adapter_reports_busy_while_concurrency_slot_is_occupied() -> None:
+async def test_fastapi_adapter_queues_dispatches_beyond_concurrency_limit() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
+    active = 0
+    max_active = 0
 
     async def process(_ctx: ActionContext) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
         started.set()
         await release.wait()
+        active -= 1
 
     app = create_larex_action_app(
         processor_id=PROCESSOR_ID,
@@ -273,21 +280,31 @@ async def test_fastapi_adapter_reports_busy_while_concurrency_slot_is_occupied()
         handler=process,
         max_concurrent_runs=1,
     )
-    body, headers = signed_dispatch()
+    first_body, first_headers = signed_dispatch(
+        payload=dispatch_payload(runId="run-1"), nonce="nonce-1"
+    )
+    second_body, second_headers = signed_dispatch(
+        payload=dispatch_payload(runId="run-2"), nonce="nonce-2"
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        dispatch_task = asyncio.create_task(client.post("/dispatch", content=body, headers=headers))
+        first = asyncio.create_task(
+            client.post("/dispatch", content=first_body, headers=first_headers)
+        )
         await started.wait()
-        ready_response = await client.get("/ready")
+        second = asyncio.create_task(
+            client.post("/dispatch", content=second_body, headers=second_headers)
+        )
+        await asyncio.sleep(0.05)
+        assert active == 1
         release.set()
-        dispatch_response = await dispatch_task
+        responses = await asyncio.gather(first, second)
 
-    assert ready_response.status_code == 503
-    assert ready_response.json() == {"status": "busy"}
-    assert dispatch_response.status_code == 200
+    assert [response.status_code for response in responses] == [200, 200]
+    assert max_active == 1
 
 
 @pytest.mark.asyncio

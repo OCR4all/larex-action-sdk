@@ -88,12 +88,6 @@ def create_larex_action_app(
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    async def readiness(response: Response) -> dict[str, str | int]:
-        if run_semaphore is not None and run_semaphore.locked():
-            response.status_code = 503
-            return {"status": "busy"}
-        return {"status": "ready", "capacity": max_concurrent_runs or -1}
-
     async def dispatch(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
         body = await _read_limited_body(request, max_dispatch_body_bytes)
         path_and_query = _request_path_and_query(request)
@@ -183,7 +177,6 @@ def create_larex_action_app(
 
     for prefix in resolved_route_prefixes:
         fastapi_app.add_api_route(f"{prefix}/health", health, methods=["GET"])
-        fastapi_app.add_api_route(f"{prefix}/ready", readiness, methods=["GET"])
         fastapi_app.add_api_route(f"{prefix}/preflight", preflight, methods=["POST"])
         fastapi_app.add_api_route(f"{prefix}/parameter-values", parameter_values, methods=["POST"])
         fastapi_app.add_api_route(f"{prefix}/dispatch", dispatch, methods=["POST"])

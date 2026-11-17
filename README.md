@@ -129,8 +129,7 @@ support.
 
 `max_concurrent_runs` bounds simultaneous in-process handlers for CPU/GPU-heavy
 processors. Additional signed dispatches remain accepted and wait for a slot.
-`/ready` returns `503` while every slot is occupied; `/health` remains a liveness
-endpoint. For crash-durable queuing, run the handler in an external worker system
+For crash-durable queuing, run the handler in an external worker system
 instead of relying on FastAPI background tasks.
 
 Result callbacks retry connection failures and transient HTTP responses (`408`,
