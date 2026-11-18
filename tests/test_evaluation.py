@@ -21,6 +21,7 @@ from larex_actions import (
     EvaluationReportsUnsupported,
     EvaluationTableRow,
     ResultBuilder,
+    RetryPolicy,
 )
 from larex_actions.fastapi import create_larex_action_app
 
@@ -141,7 +142,9 @@ async def test_evaluation_completion_retries_report_only_multipart() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         payload = dataset_payload(capabilities={"evaluationReports": True})
-        client = ActionClient.from_dispatch(payload, client=http_client, result_retry_backoff=0)
+        client = ActionClient.from_dispatch(
+            payload, client=http_client, retry=RetryPolicy(backoff=0)
+        )
         await ActionContext(payload=payload, client=client).complete_evaluation(report(), "Done")
 
     assert len(manifests) == 2
@@ -379,7 +382,9 @@ async def test_file_evaluation_completion_retries_opaque_multipart() -> None:
     results.add_file_bytes(b"score,1", "metrics.csv", mime_type="text/csv")
     results.add_file_bytes(b"\x00\xff", "results.bin")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        client = ActionClient.from_dispatch(payload, client=http_client, result_retry_backoff=0)
+        client = ActionClient.from_dispatch(
+            payload, client=http_client, retry=RetryPolicy(backoff=0)
+        )
         await ActionContext(payload=payload, client=client).complete(results)
     assert len(manifests) == 2
     assert manifests[0] == manifests[1]

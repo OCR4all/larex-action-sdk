@@ -132,11 +132,47 @@ processors. Additional signed dispatches remain accepted and wait for a slot.
 For crash-durable queuing, run the handler in an external worker system
 instead of relying on FastAPI background tasks.
 
-Result callbacks retry connection failures and transient HTTP responses (`408`,
-`429`, `502`, `503`, and `504`) automatically. Path-based files are reopened for
-every attempt. The defaults are four attempts with exponential backoff and jitter;
-processors can tune `result_max_attempts`, `result_retry_backoff`, and
-`result_retry_max_backoff` on `ActionClient` or `ActionClient.from_dispatch(...)`.
+The SDK retries connection failures and transient HTTP responses (`408`, `429`,
+`502`, `503`, and `504`) with exponential backoff and jitter. Pass a
+`RetryPolicy` as `retry=` to `ActionClient` or `ActionClient.from_dispatch(...)`
+to change the defaults:
+
+```python
+from larex_actions import ActionClient, RetryPolicy
+
+client = ActionClient.from_dispatch(
+    payload,
+    retry=RetryPolicy(result_window=1800, heartbeat_failure_grace=3600),
+)
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `backoff` | `0.5` | First wait in seconds; it doubles per attempt. |
+| `max_backoff` | `30` | Longest wait between two attempts. |
+| `read_attempts` | `3` | Attempts for `pull_input()` and file downloads. |
+| `heartbeat_attempts` | `3` | Attempts per heartbeat. |
+| `heartbeat_timeout` | `15` | Timeout of one heartbeat request, with at most 5 seconds to connect. |
+| `heartbeat_failure_grace` | `1800` | How long heartbeats may fail before the SDK raises. |
+| `result_window` | `900` | How long result uploads keep retrying. |
+| `result_max_attempts` | `None` | Optional cap on result upload attempts. |
+
+Result uploads keep retrying for up to 15 minutes, so a LAREX restart at the end
+of a long run does not lose its results. Path-based files are reopened for every
+attempt, and LAREX accepts a repeated upload of the same page or of the final
+result without importing it twice. While an upload retries, the SDK logs a
+warning on the `larex_actions.client` logger at most once a minute.
+Input pulls and file downloads retry three times; a download that breaks off
+midway starts over and overwrites the partial file.
+Heartbeats retry three times with a short timeout so a cancellation check never
+blocks for long. A retried heartbeat whose first attempt reached LAREX may
+append its `log` line twice.
+`result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` on
+the client are deprecated; they still work and override the matching
+`RetryPolicy` fields.
+If LAREX answers a result upload with a run that has already failed, for
+example because it timed out while LAREX was unreachable, the SDK raises
+`ResultSubmissionError` instead of treating the upload as delivered.
 If LAREX rejects a result, `ResultSubmissionError` includes a bounded, sanitized
 response detail in its message so processor logs show the actual import or
 validation failure. It remains an `httpx.HTTPStatusError` subtype for compatibility.
@@ -365,8 +401,25 @@ LAREX cancellation is cooperative. The processor keeps polling the heartbeat
 endpoint and LAREX responds with `cancelRequested: true` when the run should stop.
 
 - Use `await ctx.check_cancelled()` at safe interruption points.
-- `ctx.check_cancelled()` performs a heartbeat request, so avoid calling it in a
-  hot inner loop without pacing.
+- `ctx.check_cancelled()` sends a heartbeat only when the last successful
+  heartbeat is older than `cancel_check_interval` (one second by default) and
+  otherwise returns immediately, so it is cheap to call in a polling loop.
+  Every heartbeat is a database write in LAREX, so keep the interval at a second
+  or more.
+- A cancellation check or a running `ctx.heartbeat()`/`ctx.log()` that cannot
+  reach LAREX, or gets a `5xx`, `408`, or `429` response, logs a warning and
+  returns instead of raising, so a short outage or a LAREX restart does not end a
+  long training run. That update's progress, status message, and log line are
+  lost; the next heartbeat carries the current state again. Heartbeats with a
+  `run_report`, `ctx.fail()`, and the cancellation acknowledgement still raise.
+  The SDK raises once no heartbeat has succeeded for
+  `RetryPolicy.heartbeat_failure_grace` seconds (30 minutes by default), and
+  right away when LAREX rejects the run itself, for example with `401` or `403`.
+  LAREX fails a run after 30 minutes without a heartbeat
+  (`larex.actions.timeout.heartbeat-minutes`), even when it was LAREX that was
+  down, so a run that cannot reach LAREX for longer cannot deliver results
+  anyway. If your LAREX instance uses a different heartbeat timeout, set the
+  grace period to the same value.
 - `await ctx.heartbeat(..., raise_on_cancel=True)` also raises `ActionCancelled`
   when a cancellation is pending.
 - `await ctx.run_subprocess(...)` polls for cancellation while a child process is

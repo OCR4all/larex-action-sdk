@@ -60,6 +60,7 @@ from .models import (
 )
 from .nonce import NonceStore
 from .results import ResultBuilder
+from .retry import RetryPolicy
 from .verifier import DispatchVerifier
 
 __all__ = [
@@ -118,6 +119,7 @@ __all__ = [
     "ResultManifest",
     "ResultStatus",
     "ResultSubmissionError",
+    "RetryPolicy",
     "RunIssue",
     "RunReport",
     "RunReportsUnsupported",

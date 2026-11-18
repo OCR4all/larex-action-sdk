@@ -18,6 +18,7 @@ from larex_actions import (
     PageResultRejected,
     ResultBuilder,
     ResultSubmissionError,
+    RetryPolicy,
     RunIssue,
     RunReport,
     RunReportsUnsupported,
@@ -35,7 +36,7 @@ def client_for(http: httpx.AsyncClient, *, reports: bool = True) -> ActionClient
         supports_incremental_page_results=True,
         supports_run_reports=reports,
         client=http,
-        result_retry_backoff=0,
+        retry=RetryPolicy(backoff=0),
     )
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections import Counter
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from larex_actions import (
     IncrementalResultsUnsupported,
     ResultBuilder,
     ResultSubmissionError,
+    RetryPolicy,
 )
 
 from .conftest import dispatch_payload
@@ -175,12 +178,205 @@ async def test_result_submission_retries_and_reopens_path_files(tmp_path: Path) 
         client = ActionClient.from_dispatch(
             payload,
             client=http_client,
-            result_retry_backoff=0,
+            retry=RetryPolicy(backoff=0),
         )
         await client.submit_page_results("page-1", results)
 
     assert len(request_bodies) == 2
     assert all(b"<PcGts/>" in body for body in request_bodies)
+
+
+@pytest.mark.asyncio
+async def test_result_submission_keeps_retrying_within_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    attempts = 0
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 5:
+            raise httpx.ConnectError("Connection refused")
+        if attempts <= 8:
+            return httpx.Response(502)
+        return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
+
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", fake_sleep)
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        await client.complete(results, "Done")
+
+    assert attempts == 9
+    assert len(sleeps) == 8
+    assert all(0 <= delay <= 30 for delay in sleeps)
+
+
+@pytest.mark.asyncio
+async def test_result_submission_stops_retrying_when_window_has_passed() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("Connection refused")
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(result_window=0)
+        )
+        with pytest.raises(httpx.ConnectError):
+            await client.complete(results, "Done")
+
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_result_retry_delay_never_exceeds_remaining_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not sleeps:
+            return httpx.Response(503, headers={"Retry-After": "30"})
+        return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
+
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", fake_sleep)
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(result_window=5)
+        )
+        await client.complete(results, "Done")
+
+    assert len(sleeps) == 1
+    assert sleeps[0] <= 5
+
+
+@pytest.mark.asyncio
+async def test_result_max_attempts_still_caps_retries() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(503, request=request)
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(result_max_attempts=3, backoff=0),
+        )
+        with pytest.raises(ResultSubmissionError):
+            await client.complete(results, "Done")
+
+    assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_result_retries_warn_once_per_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        with caplog.at_level(logging.WARNING, logger="larex_actions.client"):
+            await client.complete(results, "Done")
+
+    warnings = [r.getMessage() for r in caplog.records if r.name == "larex_actions.client"]
+    assert len(warnings) == 1
+    assert "Could not deliver complete for LAREX run run-1 (HTTP 503)" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_result_upload_raises_when_larex_reports_the_run_failed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "run-1",
+                "status": "FAILED",
+                "errorMessage": "Action heartbeat timed out",
+            },
+        )
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(ResultSubmissionError, match="Action heartbeat timed out"):
+            await client.complete(results, "Done")
+
+
+@pytest.mark.asyncio
+async def test_heartbeats_use_the_short_heartbeat_timeout() -> None:
+    timeouts: list[dict[str, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"])
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_timeout=12),
+        )
+        await client.heartbeat(10)
+
+    assert timeouts == [{"connect": 5.0, "read": 12.0, "write": 12.0, "pool": 12.0}]
+
+
+@pytest.mark.asyncio
+async def test_deprecated_retry_arguments_still_apply() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(503, request=request)
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        with pytest.warns(DeprecationWarning, match="RetryPolicy"):
+            client = ActionClient.from_dispatch(
+                dispatch_payload_model(),
+                client=http_client,
+                result_max_attempts=2,
+                result_retry_backoff=0,
+            )
+        with pytest.raises(ResultSubmissionError):
+            await client.complete(results, "Done")
+
+    assert attempts == 2
 
 
 @pytest.mark.asyncio
@@ -301,7 +497,7 @@ async def test_transport_logging_reports_retries_and_redacts_request_data(
         client = ActionClient.from_dispatch(
             payload,
             client=http_client,
-            result_retry_backoff=0,
+            retry=RetryPolicy(backoff=0),
         )
         with (
             caplog.at_level(logging.DEBUG, logger="larex_actions.transport"),
@@ -644,6 +840,234 @@ async def test_context_check_cancelled_acknowledges_cancellation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_cancelled_reuses_recent_heartbeat() -> None:
+    heartbeat_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client, cancel_check_interval=60)
+        context = ActionContext(payload=payload, client=client)
+
+        for _ in range(10):
+            await context.check_cancelled()
+
+    assert heartbeat_count == 1
+
+
+@pytest.mark.asyncio
+async def test_check_cancelled_polls_again_after_interval() -> None:
+    heartbeat_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal heartbeat_count
+        heartbeat_count += 1
+        return httpx.Response(200, json={"cancelRequested": heartbeat_count >= 3})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client, cancel_check_interval=0)
+        context = ActionContext(payload=payload, client=client)
+
+        await context.check_cancelled()
+        await context.check_cancelled()
+        with pytest.raises(ActionCancelled):
+            await context.check_cancelled()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_retries_dropped_connection() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        if attempts == 2:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        heartbeat = await client.heartbeat(10, "Working")
+
+    assert attempts == 3
+    assert heartbeat.cancel_requested is False
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_raises_after_max_attempts() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_attempts=2, heartbeat_failure_grace=0, backoff=0),
+        )
+        with pytest.raises(httpx.RemoteProtocolError):
+            await client.heartbeat()
+
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_check_cancelled_tolerates_unreachable_larex(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 3:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return httpx.Response(200, json={"cancelRequested": True})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload, client=http_client, cancel_check_interval=0, retry=RetryPolicy(backoff=0)
+        )
+        context = ActionContext(payload=payload, client=client)
+
+        with caplog.at_level(logging.WARNING, logger="larex_actions.client"):
+            await context.check_cancelled()
+        with pytest.raises(ActionCancelled):
+            await context.check_cancelled()
+
+    assert "Could not reach LAREX for run" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_check_cancelled_raises_once_grace_has_passed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload,
+            client=http_client,
+            cancel_check_interval=0,
+            retry=RetryPolicy(heartbeat_failure_grace=0, backoff=0),
+        )
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await context.check_cancelled()
+
+
+@pytest.mark.asyncio
+async def test_check_cancelled_raises_when_larex_rejects_the_run() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(payload, client=http_client, cancel_check_interval=0)
+        context = ActionContext(payload=payload, client=client)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await context.check_cancelled()
+
+
+@pytest.mark.asyncio
+async def test_check_cancelled_waits_an_interval_after_a_failed_check() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("Connection refused")
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload,
+            client=http_client,
+            cancel_check_interval=60,
+            retry=RetryPolicy(heartbeat_attempts=1),
+        )
+        context = ActionContext(payload=payload, client=client)
+
+        for _ in range(5):
+            await context.check_cancelled()
+
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_running_heartbeat_tolerates_unreachable_larex(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        with caplog.at_level(logging.WARNING, logger="larex_actions.client"):
+            heartbeat = await client.heartbeat(50, "Training", log="epoch 10")
+            await client.heartbeat(raise_on_cancel=True)
+
+    assert heartbeat.cancel_requested is False
+    assert "heartbeat, ConnectError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_raises_once_grace_has_passed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_failure_grace=0, backoff=0),
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.heartbeat(50, "Training")
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_raises_when_larex_rejects_the_run() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.heartbeat(50, "Training")
+
+
+@pytest.mark.asyncio
+async def test_failure_report_still_raises_when_larex_is_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        with pytest.raises(httpx.ConnectError):
+            await client.heartbeat(status="failed", error_message="Boom")
+
+
+@pytest.mark.asyncio
 async def test_check_cancelled_short_circuits_after_known_cancellation() -> None:
     heartbeat_payloads: list[dict[str, object]] = []
 
@@ -716,7 +1140,7 @@ async def test_context_run_subprocess_terminates_on_cancellation(tmp_path: Path)
 
     payload = dispatch_payload_model()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        client = ActionClient.from_dispatch(payload, client=http_client)
+        client = ActionClient.from_dispatch(payload, client=http_client, cancel_check_interval=0)
         context = ActionContext(payload=payload, client=client)
 
         with pytest.raises(ActionCancelled):
@@ -811,6 +1235,117 @@ async def test_client_rejects_cross_origin_download_url() -> None:
         action_input = await client.pull_input()
         with pytest.raises(ActionUrlSecurityError, match="does not match trusted LAREX origin"):
             await client.download_bytes(action_input.pages[0].images[0])
+
+
+def _input_with_xml_file() -> dict[str, Any]:
+    return {
+        "protocolVersion": 1,
+        "runId": "run-1",
+        "processorKey": "retry-test",
+        "projectId": "project-1",
+        "parameters": {},
+        "pages": [
+            {
+                "id": "page-1",
+                "name": "001",
+                "images": [],
+                "xml": [
+                    {
+                        "id": "xml-1",
+                        "fileName": "001.xml",
+                        "variant": "default",
+                        "mimeType": "application/xml",
+                        "downloadUrl": "https://larex.example/file/xml-1",
+                    }
+                ],
+            }
+        ],
+        "cancelRequested": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pull_input_and_downloads_retry_transient_failures(tmp_path: Path) -> None:
+    calls: Counter[str] = Counter()
+
+    async def interrupted_body() -> AsyncIterator[bytes]:
+        yield b"<Pc"
+        raise httpx.ReadError("Connection reset by peer")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = "input" if request.url.path.endswith("/input") else request.url.path
+        calls[key] += 1
+        attempt = calls[key]
+        if key == "input":
+            if attempt == 1:
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+            return httpx.Response(200, json=_input_with_xml_file())
+        if request.url.path == "/file/xml-1":
+            if attempt == 1:
+                return httpx.Response(503)
+            if attempt == 2:
+                return httpx.Response(200, content=interrupted_body())
+            return httpx.Response(200, content=b"<PcGts/>")
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        action_input = await client.pull_input()
+        path = await client.download_to_path(action_input.pages[0].xml[0], tmp_path / "a.xml")
+        content = await client.download_bytes(action_input.pages[0].xml[0])
+
+    assert calls["input"] == 2
+    assert path.read_bytes() == b"<PcGts/>"
+    assert content == b"<PcGts/>"
+    assert calls["/file/xml-1"] == 4
+
+
+@pytest.mark.asyncio
+async def test_downloads_raise_after_read_max_attempts() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path.endswith("/input"):
+            return httpx.Response(200, json=_input_with_xml_file())
+        calls += 1
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(read_attempts=2, backoff=0),
+        )
+        action_input = await client.pull_input()
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.download_bytes(action_input.pages[0].xml[0])
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_downloads_do_not_retry_client_errors() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path.endswith("/input"):
+            return httpx.Response(200, json=_input_with_xml_file())
+        calls += 1
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(backoff=0)
+        )
+        action_input = await client.pull_input()
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.download_bytes(action_input.pages[0].xml[0])
+
+    assert calls == 1
 
 
 def dispatch_payload_model(**overrides: Any):

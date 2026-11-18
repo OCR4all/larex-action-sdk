@@ -4,6 +4,13 @@
 
 - Remove the `/ready` route. LAREX never polled it, and dispatches beyond `max_concurrent_runs` are queued rather than refused.
 
+- Add `RetryPolicy`, passed as `retry=` to `ActionClient` and `ActionClient.from_dispatch(...)`, for all retry and failure-tolerance settings. `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` are deprecated and still apply.
+- Retry heartbeats, `pull_input()`, and file downloads on connection failures and transient HTTP responses, three attempts each; heartbeats use a 15-second timeout.
+- Retry result uploads for up to 15 minutes with waits of at most 30 seconds instead of four attempts, and log a warning at most once a minute while retrying.
+- Raise `ResultSubmissionError` when LAREX answers a result upload with a failed run, instead of treating the results as delivered.
+- Let `check_cancelled()` reuse a heartbeat younger than `cancel_check_interval` (default one second) instead of sending one per call; `run_subprocess` cancellation polling follows the same interval.
+- Let `check_cancelled()` and running `heartbeat()`/`log()` calls log and continue when LAREX is unreachable or answers with a transient error, raising only after `RetryPolicy.heartbeat_failure_grace` (default 30 minutes, matching the LAREX heartbeat timeout) without a successful heartbeat. Heartbeats with a run report, failure reports, and cancellation acknowledgements still raise.
+
 - Reject a second image with the same page and variant in `ResultBuilder` and `ResultManifest`. One page can return several image variants, such as binary and grayscale.
 
 - Add `ParameterChoice.default` so a parameter value provider can mark the choice LAREX preselects. The flag is only sent when the discovery request announces `capabilities.parameterChoiceDefaults`, so older LAREX versions are unaffected.

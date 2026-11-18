@@ -8,10 +8,11 @@ import os
 import random
 import re
 import time
+import warnings
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from contextlib import ExitStack, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import SplitResult, urlsplit
@@ -45,9 +46,11 @@ from .models import (
     RunStatus,
 )
 from .results import ResultBuilder
+from .retry import RetryPolicy
 
 ParameterModelT = TypeVar("ParameterModelT", bound=BaseModel)
 
+logger = logging.getLogger(__name__)
 transport_logger = logging.getLogger("larex_actions.transport")
 
 
@@ -76,9 +79,11 @@ class ActionClient:
         supports_custom_file_results: bool = False,
         supports_evaluation_reports: bool = False,
         supports_run_reports: bool = False,
-        result_max_attempts: int = 4,
-        result_retry_backoff: float = 0.5,
-        result_retry_max_backoff: float = 8.0,
+        retry: RetryPolicy | None = None,
+        cancel_check_interval: float = 1.0,
+        result_max_attempts: int | None = None,
+        result_retry_backoff: float | None = None,
+        result_retry_max_backoff: float | None = None,
         run_id: str | None = None,
         kind: ActionKind | None = None,
         evaluation_output_mode: str | None = None,
@@ -106,13 +111,18 @@ class ActionClient:
         self._supports_evaluation_reports = supports_evaluation_reports
         self._supports_run_reports = supports_run_reports
         self._incremental_submission_started = False
-        if result_max_attempts < 1:
-            raise ValueError("result_max_attempts must be at least 1")
-        if result_retry_backoff < 0 or result_retry_max_backoff < 0:
-            raise ValueError("result retry backoff values must not be negative")
-        self._result_max_attempts = result_max_attempts
-        self._result_retry_backoff = result_retry_backoff
-        self._result_retry_max_backoff = result_retry_max_backoff
+        self._retry = _apply_deprecated_retry_arguments(
+            retry or RetryPolicy(),
+            result_max_attempts=result_max_attempts,
+            result_retry_backoff=result_retry_backoff,
+            result_retry_max_backoff=result_retry_max_backoff,
+        )
+        if cancel_check_interval < 0:
+            raise ValueError("cancel_check_interval must not be negative")
+        self._cancel_check_interval = cancel_check_interval
+        self._created_at = time.monotonic()
+        self._last_heartbeat_at: float | None = None
+        self._last_cancel_check_at: float | None = None
         self._kind = kind
         self._evaluation_output_mode = evaluation_output_mode
         self._run_id = run_id
@@ -128,9 +138,11 @@ class ActionClient:
         enforce_url_security: bool = True,
         allowed_callback_origins: Collection[str] | None = None,
         allow_insecure_local_urls: bool = True,
-        result_max_attempts: int = 4,
-        result_retry_backoff: float = 0.5,
-        result_retry_max_backoff: float = 8.0,
+        retry: RetryPolicy | None = None,
+        cancel_check_interval: float = 1.0,
+        result_max_attempts: int | None = None,
+        result_retry_backoff: float | None = None,
+        result_retry_max_backoff: float | None = None,
     ) -> ActionClient:
         return cls(
             pull_url=payload.pull_url,
@@ -146,6 +158,8 @@ class ActionClient:
             supports_custom_file_results=payload.capabilities.custom_file_results,
             supports_evaluation_reports=payload.capabilities.evaluation_reports,
             supports_run_reports=payload.capabilities.run_reports,
+            retry=retry,
+            cancel_check_interval=cancel_check_interval,
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
@@ -165,16 +179,18 @@ class ActionClient:
             await self._client.aclose()
 
     async def pull_input(self) -> ActionInput:
-        started = time.perf_counter()
-        response: httpx.Response | None = None
-        try:
-            received_response = await self._client.get(self.pull_url, headers=self._auth_headers())
-            response = received_response
-            received_response.raise_for_status()
-            action_input = ActionInput.model_validate(received_response.json())
-        except Exception as exc:
-            self._log_transport_failure("pull_input", started, response, exc)
-            raise
+        attempt = 0
+        while True:
+            attempt += 1
+            started = time.perf_counter()
+            response: httpx.Response | None = None
+            try:
+                response = await self._client.get(self.pull_url, headers=self._auth_headers())
+                response.raise_for_status()
+                action_input = ActionInput.model_validate(response.json())
+                break
+            except Exception as exc:
+                await self._retry_read_or_raise("pull_input", attempt, started, response, exc)
         self._kind = self._kind or action_input.kind
         self._evaluation_output_mode = (
             self._evaluation_output_mode or action_input.evaluation_output_mode
@@ -220,15 +236,26 @@ class ActionClient:
         if status == "running" and raise_on_cancel:
             await self._raise_if_cancel_requested(status_message=status_message, log=log)
 
-        heartbeat = await self._post_heartbeat(
-            progress_percent=progress_percent,
-            status_message=status_message,
-            log=log,
-            status=status,
-            error_message=error_message,
-            operation="fail" if status == "failed" else "heartbeat",
-            run_report=run_report,
-        )
+        try:
+            heartbeat = await self._post_heartbeat(
+                progress_percent=progress_percent,
+                status_message=status_message,
+                log=log,
+                status=status,
+                error_message=error_message,
+                operation="fail" if status == "failed" else "heartbeat",
+                run_report=run_report,
+            )
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if (
+                status != "running"
+                or run_report is not None
+                or not self._tolerate_heartbeat_failure(exc, "heartbeat")
+            ):
+                raise
+            heartbeat = HeartbeatResponse.model_validate(
+                {"cancelRequested": self._cancel_requested}
+            )
         if status == "cancelled":
             self._cancel_requested = True
             self._cancelled_reported = True
@@ -238,6 +265,47 @@ class ActionClient:
         if raise_on_cancel:
             await self._raise_if_cancel_requested(status_message=status_message, log=log)
         return heartbeat
+
+    async def check_cancelled(self) -> None:
+        if not self._cancel_requested:
+            if not self._cancel_check_due():
+                return
+            try:
+                heartbeat = await self._post_heartbeat()
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                if not self._tolerate_heartbeat_failure(exc, "cancellation check"):
+                    raise
+                return
+            finally:
+                self._last_cancel_check_at = time.monotonic()
+            self._cancel_requested = heartbeat.cancel_requested
+        await self._raise_if_cancel_requested()
+
+    def _cancel_check_due(self) -> bool:
+        now = time.monotonic()
+        return all(
+            checked_at is None or now - checked_at >= self._cancel_check_interval
+            for checked_at in (self._last_heartbeat_at, self._last_cancel_check_at)
+        )
+
+    def _tolerate_heartbeat_failure(self, error: Exception, purpose: str) -> bool:
+        if isinstance(error, httpx.HTTPStatusError):
+            status_code = error.response.status_code
+            if status_code < 500 and not _is_retryable_status(status_code):
+                return False
+        last_success = self._last_heartbeat_at or self._created_at
+        silent_seconds = time.monotonic() - last_success
+        if silent_seconds >= self._retry.heartbeat_failure_grace:
+            return False
+        logger.warning(
+            "Could not reach LAREX for run %s (%s, %s); continuing, "
+            "last successful heartbeat %.0f seconds ago",
+            self._run_id,
+            purpose,
+            type(error).__name__,
+            silent_seconds,
+        )
+        return True
 
     async def cancelled(
         self,
@@ -285,58 +353,110 @@ class ActionClient:
             "errorMessage": error_message,
             "runReport": run_report.model_dump(by_alias=True) if run_report is not None else None,
         }
-        started = time.perf_counter()
-        response: httpx.Response | None = None
-        try:
-            received_response = await self._client.post(
-                self.heartbeat_url,
-                headers=self._auth_headers(),
-                json={key: value for key, value in payload.items() if value is not None},
-            )
-            response = received_response
-            received_response.raise_for_status()
-            heartbeat = HeartbeatResponse.model_validate(received_response.json())
-        except Exception as exc:
-            self._log_transport_failure(
-                operation,
-                started,
-                response,
-                exc,
-                result_status=status,
-            )
-            raise
-        assert response is not None
-        self._log_transport(
-            operation,
-            "completed",
-            started=started,
-            http_status=response.status_code,
-            result_status=status,
+        body = {key: value for key, value in payload.items() if value is not None}
+        heartbeat_timeout = httpx.Timeout(
+            self._retry.heartbeat_timeout, connect=min(5.0, self._retry.heartbeat_timeout)
         )
-        return heartbeat
+        for attempt in range(1, self._retry.heartbeat_attempts + 1):
+            started = time.perf_counter()
+            response: httpx.Response | None = None
+            try:
+                response = await self._client.post(
+                    self.heartbeat_url,
+                    headers=self._auth_headers(),
+                    json=body,
+                    timeout=heartbeat_timeout,
+                )
+            except httpx.TransportError as exc:
+                if attempt >= self._retry.heartbeat_attempts:
+                    self._log_transport_failure(
+                        operation, started, response, exc, result_status=status, attempt=attempt
+                    )
+                    raise
+                retry_delay = self._retry_delay(attempt, None)
+                self._log_transport(
+                    operation,
+                    "retry",
+                    started=started,
+                    result_status=status,
+                    attempt=attempt,
+                    error_type=type(exc).__name__,
+                    retry_delay_seconds=retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            except Exception as exc:
+                self._log_transport_failure(
+                    operation, started, response, exc, result_status=status, attempt=attempt
+                )
+                raise
+
+            received_response = response
+            if (
+                _is_retryable_status(received_response.status_code)
+                and attempt < self._retry.heartbeat_attempts
+            ):
+                retry_delay = self._retry_delay(attempt, received_response)
+                self._log_transport(
+                    operation,
+                    "retry",
+                    started=started,
+                    http_status=received_response.status_code,
+                    result_status=status,
+                    attempt=attempt,
+                    retry_delay_seconds=retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+
+            try:
+                received_response.raise_for_status()
+                heartbeat = HeartbeatResponse.model_validate(received_response.json())
+            except Exception as exc:
+                self._log_transport_failure(
+                    operation,
+                    started,
+                    received_response,
+                    exc,
+                    result_status=status,
+                    attempt=attempt,
+                )
+                raise
+            self._last_heartbeat_at = time.monotonic()
+            self._log_transport(
+                operation,
+                "completed",
+                started=started,
+                http_status=received_response.status_code,
+                result_status=status,
+                attempt=attempt,
+            )
+            return heartbeat
+        raise RuntimeError("Heartbeat retry loop exited unexpectedly")
 
     async def download_bytes(self, file: ActionFile) -> bytes:
-        started = time.perf_counter()
-        response: httpx.Response | None = None
-        try:
-            self._validate_download_url(file.download_url)
-            received_response = await self._client.get(
-                file.download_url, headers=self._auth_headers()
-            )
-            response = received_response
-            received_response.raise_for_status()
-            content = received_response.content
-        except Exception as exc:
-            self._log_transport_failure(
-                "download_bytes",
-                started,
-                response,
-                exc,
-                page_id=self._file_page_ids.get(file.id),
-                file_id=file.id,
-                file_type=_download_file_type(file),
-            )
-            raise
+        attempt = 0
+        while True:
+            attempt += 1
+            started = time.perf_counter()
+            response: httpx.Response | None = None
+            try:
+                self._validate_download_url(file.download_url)
+                response = await self._client.get(file.download_url, headers=self._auth_headers())
+                response.raise_for_status()
+                content = response.content
+                break
+            except Exception as exc:
+                await self._retry_read_or_raise(
+                    "download_bytes",
+                    attempt,
+                    started,
+                    response,
+                    exc,
+                    page_id=self._file_page_ids.get(file.id),
+                    file_id=file.id,
+                    file_type=_download_file_type(file),
+                )
         assert response is not None
         self._log_transport(
             "download_bytes",
@@ -351,35 +471,39 @@ class ActionClient:
         return content
 
     async def download_to_path(self, file: ActionFile, path: str | Path) -> Path:
-        started = time.perf_counter()
-        response: httpx.Response | None = None
-        byte_count = 0
-        try:
-            self._validate_download_url(file.download_url)
-            target = Path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            async with self._client.stream(
-                "GET",
-                file.download_url,
-                headers=self._auth_headers(),
-            ) as received_response:
-                response = received_response
-                received_response.raise_for_status()
-                with target.open("wb") as output:
-                    async for chunk in received_response.aiter_bytes():
-                        output.write(chunk)
-                        byte_count += len(chunk)
-        except Exception as exc:
-            self._log_transport_failure(
-                "download_to_path",
-                started,
-                response,
-                exc,
-                page_id=self._file_page_ids.get(file.id),
-                file_id=file.id,
-                file_type=_download_file_type(file),
-            )
-            raise
+        target = Path(path)
+        attempt = 0
+        while True:
+            attempt += 1
+            started = time.perf_counter()
+            response: httpx.Response | None = None
+            byte_count = 0
+            try:
+                self._validate_download_url(file.download_url)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                async with self._client.stream(
+                    "GET",
+                    file.download_url,
+                    headers=self._auth_headers(),
+                ) as received_response:
+                    response = received_response
+                    received_response.raise_for_status()
+                    with target.open("wb") as output:
+                        async for chunk in received_response.aiter_bytes():
+                            output.write(chunk)
+                            byte_count += len(chunk)
+                break
+            except Exception as exc:
+                await self._retry_read_or_raise(
+                    "download_to_path",
+                    attempt,
+                    started,
+                    response,
+                    exc,
+                    page_id=self._file_page_ids.get(file.id),
+                    file_id=file.id,
+                    file_type=_download_file_type(file),
+                )
         assert response is not None
         self._log_transport(
             "download_to_path",
@@ -606,7 +730,11 @@ class ActionClient:
                 "This LAREX server did not advertise customFileResults support"
             )
         file_types = _result_file_types(result_files)
-        for attempt in range(1, self._result_max_attempts + 1):
+        retry_deadline = time.monotonic() + self._retry.result_window
+        last_warned_at: float | None = None
+        attempt = 0
+        while True:
+            attempt += 1
             started = time.perf_counter()
             response: httpx.Response | None = None
             try:
@@ -625,7 +753,8 @@ class ActionClient:
                         ),
                     )
             except httpx.TransportError as exc:
-                if attempt >= self._result_max_attempts:
+                retry_delay = self._next_result_retry_delay(attempt, response, retry_deadline)
+                if retry_delay is None:
                     self._log_transport_failure(
                         operation,
                         started,
@@ -638,7 +767,9 @@ class ActionClient:
                         attempt=attempt,
                     )
                     raise
-                retry_delay = self._result_retry_delay(attempt, response)
+                last_warned_at = self._warn_result_retry(
+                    operation, page_id, type(exc).__name__, retry_deadline, last_warned_at
+                )
                 self._log_transport(
                     operation,
                     "retry",
@@ -669,11 +800,19 @@ class ActionClient:
 
             assert response is not None
             received_response = response
-            if (
-                _is_retryable_result_status(received_response.status_code)
-                and attempt < self._result_max_attempts
-            ):
-                retry_delay = self._result_retry_delay(attempt, received_response)
+            retry_delay = (
+                self._next_result_retry_delay(attempt, received_response, retry_deadline)
+                if _is_retryable_status(received_response.status_code)
+                else None
+            )
+            if retry_delay is not None:
+                last_warned_at = self._warn_result_retry(
+                    operation,
+                    page_id,
+                    f"HTTP {received_response.status_code}",
+                    retry_deadline,
+                    last_warned_at,
+                )
                 self._log_transport(
                     operation,
                     "retry",
@@ -692,6 +831,7 @@ class ActionClient:
             try:
                 _raise_for_result_status(received_response)
                 data = received_response.json()
+                _raise_if_run_failed(received_response, data)
             except Exception as exc:
                 self._log_transport_failure(
                     operation,
@@ -717,7 +857,6 @@ class ActionClient:
                 attempt=attempt,
             )
             return data if isinstance(data, Mapping) else {"response": data}
-        raise RuntimeError("Result submission retry loop exited unexpectedly")
 
     def _log_transport_failure(
         self,
@@ -766,17 +905,82 @@ class ActionClient:
         )
         transport_logger.debug("LAREX SDK transport %s", rendered)
 
-    def _result_retry_delay(self, attempt: int, response: httpx.Response | None) -> float:
+    def _warn_result_retry(
+        self,
+        operation: str,
+        page_id: str | None,
+        reason: str,
+        deadline: float,
+        last_warned_at: float | None,
+    ) -> float | None:
+        now = time.monotonic()
+        if last_warned_at is not None and now - last_warned_at < _RESULT_RETRY_WARNING_INTERVAL:
+            return last_warned_at
+        logger.warning(
+            "Could not deliver %s for LAREX run %s%s (%s); retrying for up to %.0f more seconds",
+            operation,
+            self._run_id,
+            f" page {page_id}" if page_id else "",
+            reason,
+            max(0.0, deadline - now),
+        )
+        return now
+
+    async def _retry_read_or_raise(
+        self,
+        operation: str,
+        attempt: int,
+        started: float,
+        response: httpx.Response | None,
+        error: Exception,
+        **metadata: object,
+    ) -> None:
+        retryable = isinstance(error, httpx.TransportError) or (
+            isinstance(error, httpx.HTTPStatusError)
+            and _is_retryable_status(error.response.status_code)
+        )
+        if not retryable or attempt >= self._retry.read_attempts:
+            self._log_transport_failure(
+                operation, started, response, error, attempt=attempt, **metadata
+            )
+            raise error
+        retry_delay = self._retry_delay(attempt, response)
+        self._log_transport(
+            operation,
+            "retry",
+            started=started,
+            http_status=response.status_code if response is not None else None,
+            attempt=attempt,
+            error_type=type(error).__name__,
+            retry_delay_seconds=retry_delay,
+            **metadata,
+        )
+        await asyncio.sleep(retry_delay)
+
+    def _next_result_retry_delay(
+        self, attempt: int, response: httpx.Response | None, deadline: float
+    ) -> float | None:
+        if (
+            self._retry.result_max_attempts is not None
+            and attempt >= self._retry.result_max_attempts
+        ):
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        return min(self._retry_delay(attempt, response), remaining)
+
+    def _retry_delay(self, attempt: int, response: httpx.Response | None) -> float:
         if response is not None:
             retry_after = response.headers.get("Retry-After")
             if retry_after is not None:
                 try:
-                    return max(0.0, min(float(retry_after), self._result_retry_max_backoff))
+                    return max(0.0, min(float(retry_after), self._retry.max_backoff))
                 except ValueError:
                     pass
         exponential = min(
-            self._result_retry_max_backoff,
-            self._result_retry_backoff * (2 ** (attempt - 1)),
+            self._retry.max_backoff,
+            self._retry.backoff * (2 ** (attempt - 1)),
         )
         return random.uniform(0, exponential)
 
@@ -859,7 +1063,7 @@ class ActionContext:
         await self.check_cancelled()
 
     async def check_cancelled(self) -> None:
-        await self.heartbeat(raise_on_cancel=True)
+        await self.client.check_cancelled()
 
     async def cancelled(
         self,
@@ -1064,11 +1268,47 @@ def _normalize_origin(origin: str) -> str:
     return _origin(parsed)
 
 
-def _is_retryable_result_status(status_code: int) -> bool:
+def _apply_deprecated_retry_arguments(
+    policy: RetryPolicy,
+    *,
+    result_max_attempts: int | None,
+    result_retry_backoff: float | None,
+    result_retry_max_backoff: float | None,
+) -> RetryPolicy:
+    overrides: dict[str, Any] = {}
+    if result_max_attempts is not None:
+        overrides["result_max_attempts"] = result_max_attempts
+    if result_retry_backoff is not None:
+        overrides["backoff"] = result_retry_backoff
+    if result_retry_max_backoff is not None:
+        overrides["max_backoff"] = result_retry_max_backoff
+    if not overrides:
+        return policy
+    warnings.warn(
+        "result_max_attempts, result_retry_backoff and result_retry_max_backoff are "
+        "deprecated; pass retry=RetryPolicy(...) instead",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return replace(policy, **overrides)
+
+
+def _raise_if_run_failed(response: httpx.Response, data: object) -> None:
+    if not isinstance(data, Mapping) or str(data.get("status", "")).upper() != "FAILED":
+        return
+    reason = data.get("errorMessage") or data.get("statusMessage")
+    message = "LAREX did not accept the results because the run has already failed"
+    if isinstance(reason, str) and reason:
+        message += f": {reason[:_RESULT_ERROR_BODY_LIMIT]}"
+    raise ResultSubmissionError(message, request=response.request, response=response)
+
+
+def _is_retryable_status(status_code: int) -> bool:
     return status_code in {408, 429, 502, 503, 504}
 
 
 _RESULT_ERROR_BODY_LIMIT = 2_048
+_RESULT_RETRY_WARNING_INTERVAL = 60.0
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")
 _TRANSPORT_LOG_METADATA_FIELDS = frozenset(
     {
