@@ -81,6 +81,7 @@ class ActionClient:
         supports_run_reports: bool = False,
         retry: RetryPolicy | None = None,
         cancel_check_interval: float = 1.0,
+        larex_heartbeat_timeout: float | None = None,
         result_max_attempts: int | None = None,
         result_retry_backoff: float | None = None,
         result_retry_max_backoff: float | None = None,
@@ -120,6 +121,9 @@ class ActionClient:
         if cancel_check_interval < 0:
             raise ValueError("cancel_check_interval must not be negative")
         self._cancel_check_interval = cancel_check_interval
+        self._heartbeat_failure_grace = _heartbeat_failure_grace(
+            self._retry, larex_heartbeat_timeout
+        )
         self._created_at = time.monotonic()
         self._last_heartbeat_at: float | None = None
         self._last_cancel_check_at: float | None = None
@@ -160,6 +164,7 @@ class ActionClient:
             supports_run_reports=payload.capabilities.run_reports,
             retry=retry,
             cancel_check_interval=cancel_check_interval,
+            larex_heartbeat_timeout=payload.heartbeat_timeout_seconds,
             result_max_attempts=result_max_attempts,
             result_retry_backoff=result_retry_backoff,
             result_retry_max_backoff=result_retry_max_backoff,
@@ -167,6 +172,10 @@ class ActionClient:
             kind=payload.kind,
             evaluation_output_mode=payload.evaluation_output_mode,
         )
+
+    @property
+    def heartbeat_failure_grace(self) -> float:
+        return self._heartbeat_failure_grace
 
     async def __aenter__(self) -> ActionClient:
         return self
@@ -295,7 +304,7 @@ class ActionClient:
                 return False
         last_success = self._last_heartbeat_at or self._created_at
         silent_seconds = time.monotonic() - last_success
-        if silent_seconds >= self._retry.heartbeat_failure_grace:
+        if silent_seconds >= self._heartbeat_failure_grace:
             return False
         logger.warning(
             "Could not reach LAREX for run %s (%s, %s); continuing, "
@@ -354,9 +363,8 @@ class ActionClient:
             "runReport": run_report.model_dump(by_alias=True) if run_report is not None else None,
         }
         body = {key: value for key, value in payload.items() if value is not None}
-        heartbeat_timeout = httpx.Timeout(
-            self._retry.heartbeat_timeout, connect=min(5.0, self._retry.heartbeat_timeout)
-        )
+        request_timeout = self._retry.heartbeat_request_timeout
+        heartbeat_timeout = httpx.Timeout(request_timeout, connect=min(5.0, request_timeout))
         for attempt in range(1, self._retry.heartbeat_attempts + 1):
             started = time.perf_counter()
             response: httpx.Response | None = None
@@ -1268,6 +1276,14 @@ def _normalize_origin(origin: str) -> str:
     return _origin(parsed)
 
 
+def _heartbeat_failure_grace(policy: RetryPolicy, larex_heartbeat_timeout: float | None) -> float:
+    if policy.heartbeat_failure_grace is not None:
+        return policy.heartbeat_failure_grace
+    if larex_heartbeat_timeout is not None and larex_heartbeat_timeout > 0:
+        return float(larex_heartbeat_timeout)
+    return _DEFAULT_HEARTBEAT_FAILURE_GRACE
+
+
 def _apply_deprecated_retry_arguments(
     policy: RetryPolicy,
     *,
@@ -1309,6 +1325,7 @@ def _is_retryable_status(status_code: int) -> bool:
 
 _RESULT_ERROR_BODY_LIMIT = 2_048
 _RESULT_RETRY_WARNING_INTERVAL = 60.0
+_DEFAULT_HEARTBEAT_FAILURE_GRACE = 1800.0
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")
 _TRANSPORT_LOG_METADATA_FIELDS = frozenset(
     {

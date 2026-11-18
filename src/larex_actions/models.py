@@ -231,6 +231,7 @@ class ActionDispatchPayload(LarexModel):
     pull_url: str = Field(alias="pullUrl")
     heartbeat_url: str = Field(alias="heartbeatUrl")
     result_url: str = Field(alias="resultUrl")
+    heartbeat_timeout_seconds: int | None = Field(default=None, alias="heartbeatTimeoutSeconds")
     capabilities: ActionCapabilities = Field(default_factory=ActionCapabilities)
 
     @model_validator(mode="after")

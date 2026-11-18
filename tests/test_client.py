@@ -347,7 +347,7 @@ async def test_heartbeats_use_the_short_heartbeat_timeout() -> None:
         client = ActionClient.from_dispatch(
             dispatch_payload_model(),
             client=http_client,
-            retry=RetryPolicy(heartbeat_timeout=12),
+            retry=RetryPolicy(heartbeat_request_timeout=12),
         )
         await client.heartbeat(10)
 
@@ -1352,3 +1352,22 @@ def dispatch_payload_model(**overrides: Any):
     from larex_actions import ActionDispatchPayload
 
     return ActionDispatchPayload.model_validate(dispatch_payload(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("timeout_seconds", "policy", "expected"),
+    [
+        (2700, None, 2700.0),
+        (2700, RetryPolicy(heartbeat_failure_grace=60), 60.0),
+        (None, None, 1800.0),
+        (0, None, 1800.0),
+    ],
+)
+def test_heartbeat_failure_grace_follows_larex_timeout(
+    timeout_seconds: int | None, policy: RetryPolicy | None, expected: float
+) -> None:
+    payload = dispatch_payload_model(heartbeatTimeoutSeconds=timeout_seconds)
+    client = ActionClient.from_dispatch(payload, retry=policy)
+
+    assert payload.heartbeat_timeout_seconds == timeout_seconds
+    assert client.heartbeat_failure_grace == expected

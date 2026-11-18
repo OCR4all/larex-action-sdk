@@ -152,8 +152,8 @@ client = ActionClient.from_dispatch(
 | `max_backoff` | `30` | Longest wait between two attempts. |
 | `read_attempts` | `3` | Attempts for `pull_input()` and file downloads. |
 | `heartbeat_attempts` | `3` | Attempts per heartbeat. |
-| `heartbeat_timeout` | `15` | Timeout of one heartbeat request, with at most 5 seconds to connect. |
-| `heartbeat_failure_grace` | `1800` | How long heartbeats may fail before the SDK raises. |
+| `heartbeat_request_timeout` | `15` | Timeout of one heartbeat request, with at most 5 seconds to connect. |
+| `heartbeat_failure_grace` | LAREX's timeout | How long heartbeats may fail before the SDK raises. |
 | `result_window` | `900` | How long result uploads keep retrying. |
 | `result_max_attempts` | `None` | Optional cap on result upload attempts. |
 
@@ -412,14 +412,15 @@ endpoint and LAREX responds with `cancelRequested: true` when the run should sto
   long training run. That update's progress, status message, and log line are
   lost; the next heartbeat carries the current state again. Heartbeats with a
   `run_report`, `ctx.fail()`, and the cancellation acknowledgement still raise.
-  The SDK raises once no heartbeat has succeeded for
-  `RetryPolicy.heartbeat_failure_grace` seconds (30 minutes by default), and
-  right away when LAREX rejects the run itself, for example with `401` or `403`.
-  LAREX fails a run after 30 minutes without a heartbeat
-  (`larex.actions.timeout.heartbeat-minutes`), even when it was LAREX that was
-  down, so a run that cannot reach LAREX for longer cannot deliver results
-  anyway. If your LAREX instance uses a different heartbeat timeout, set the
-  grace period to the same value.
+  The SDK raises once no heartbeat has succeeded for as long as LAREX waits
+  before it fails a run without heartbeats, and right away when LAREX rejects
+  the run itself, for example with `401` or `403`. LAREX sends that timeout as
+  `heartbeatTimeoutSeconds` in the dispatch (30 minutes by default, set with
+  `larex.actions.timeout.heartbeat-minutes`); it applies even when it was LAREX
+  that was down, so a run that cannot reach LAREX for longer cannot deliver
+  results anyway. Older LAREX versions do not send it, and the SDK then waits
+  30 minutes. Set `RetryPolicy.heartbeat_failure_grace` to override it;
+  `client.heartbeat_failure_grace` shows the value in use.
 - `await ctx.heartbeat(..., raise_on_cancel=True)` also raises `ActionCancelled`
   when a cancellation is pending.
 - `await ctx.run_subprocess(...)` polls for cancellation while a child process is
