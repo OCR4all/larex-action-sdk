@@ -26,6 +26,14 @@
 
 <!-- version list -->
 
+## v0.28.0 (2026-11-19)
+
+### Features
+
+- **client**: Expose seconds_since_last_heartbeat and accept a RetryPolicy in the FastAPI app
+  ([`e40a664`](https://github.com/OCR4all/larex-action-sdk/commit/e40a66453300c50313b8a6edfa876001b59459b4))
+
+
 ## v0.27.0 (2026-11-19)
 
 ### Documentation
