@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import json
 import logging
@@ -1320,10 +1321,23 @@ def _apply_deprecated_retry_arguments(
     warnings.warn(
         "result_max_attempts, result_retry_backoff and result_retry_max_backoff are "
         "deprecated; pass retry=RetryPolicy(...) instead",
-        DeprecationWarning,
-        stacklevel=3,
+        FutureWarning,
+        stacklevel=_caller_stacklevel(),
     )
     return replace(policy, **overrides)
+
+
+def _caller_stacklevel() -> int:
+    package_dir = str(Path(__file__).resolve().parent)
+    current = inspect.currentframe()
+    frame = current.f_back if current is not None else None
+    level = 1
+    while frame is not None and str(Path(frame.f_code.co_filename).resolve()).startswith(
+        package_dir
+    ):
+        frame = frame.f_back
+        level += 1
+    return level
 
 
 def _raise_if_run_failed(response: httpx.Response, data: object) -> None:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Warn about the deprecated `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` arguments with a `FutureWarning` that Python shows by default and that points at the caller's line, also when they are passed to `ActionClient.from_dispatch(...)`.
+
 - Remove the `/ready` route. LAREX never polled it, and dispatches beyond `max_concurrent_runs` are queued rather than refused.
 
 - Add `RetryPolicy`, passed as `retry=` to `ActionClient` and `ActionClient.from_dispatch(...)`, for all retry and failure-tolerance settings. `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` are deprecated and still apply.

@@ -471,7 +471,7 @@ async def test_deprecated_retry_arguments_still_apply() -> None:
     results = ResultBuilder()
     results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        with pytest.warns(DeprecationWarning, match="RetryPolicy"):
+        with pytest.warns(FutureWarning, match="RetryPolicy") as recorded:
             client = ActionClient.from_dispatch(
                 dispatch_payload_model(),
                 client=http_client,
@@ -482,6 +482,21 @@ async def test_deprecated_retry_arguments_still_apply() -> None:
             await client.complete(results, "Done")
 
     assert attempts == 2
+    assert [Path(warning.filename).name for warning in recorded] == ["test_client.py"]
+
+
+def test_deprecated_retry_arguments_warn_at_the_direct_caller() -> None:
+    payload = dispatch_payload_model()
+    with pytest.warns(FutureWarning, match="RetryPolicy") as recorded:
+        ActionClient(
+            pull_url=payload.pull_url,
+            heartbeat_url=payload.heartbeat_url,
+            result_url=payload.result_url,
+            secret="secret",
+            result_retry_max_backoff=5,
+        )
+
+    assert [Path(warning.filename).name for warning in recorded] == ["test_client.py"]
 
 
 @pytest.mark.asyncio
