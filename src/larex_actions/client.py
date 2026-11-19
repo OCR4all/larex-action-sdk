@@ -177,6 +177,10 @@ class ActionClient:
     def heartbeat_failure_grace(self) -> float:
         return self._heartbeat_failure_grace
 
+    @property
+    def seconds_since_last_heartbeat(self) -> float:
+        return time.monotonic() - (self._last_heartbeat_at or self._created_at)
+
     async def __aenter__(self) -> ActionClient:
         return self
 
@@ -302,8 +306,7 @@ class ActionClient:
             status_code = error.response.status_code
             if status_code < 500 and not _is_retryable_status(status_code):
                 return False
-        last_success = self._last_heartbeat_at or self._created_at
-        silent_seconds = time.monotonic() - last_success
+        silent_seconds = self.seconds_since_last_heartbeat
         if silent_seconds >= self._heartbeat_failure_grace:
             return False
         logger.warning(
@@ -1028,6 +1031,10 @@ class ActionContext:
     @property
     def capabilities(self) -> ActionCapabilities:
         return self.payload.capabilities
+
+    @property
+    def seconds_since_last_heartbeat(self) -> float:
+        return self.client.seconds_since_last_heartbeat
 
     def parameters_as(self, model: type[ParameterModelT]) -> ParameterModelT:
         return model.model_validate(self.payload.parameters)

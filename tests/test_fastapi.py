@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from larex_actions import ActionClient, ActionContext, ParameterChoice
+from larex_actions import ActionClient, ActionContext, ParameterChoice, RetryPolicy
 from larex_actions.fastapi import create_larex_action_app
 
 from .conftest import (
@@ -43,6 +43,45 @@ async def test_fastapi_adapter_accepts_dispatch_and_runs_handler() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "runId": "run-1"}
     assert calls == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_fastapi_adapter_passes_retry_policy_to_the_client() -> None:
+    graces: list[float] = []
+
+    async def process(ctx: ActionContext) -> None:
+        graces.append(ctx.client.heartbeat_failure_grace)
+
+    app = create_larex_action_app(
+        processor_id=PROCESSOR_ID,
+        dispatch_secret=SECRET,
+        handler=process,
+        retry=RetryPolicy(heartbeat_failure_grace=300),
+    )
+    body, headers = signed_dispatch()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post("/dispatch", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert graces == [300.0]
+
+
+def test_fastapi_adapter_rejects_retry_policy_with_client_factory() -> None:
+    async def process(ctx: ActionContext) -> None:
+        return None
+
+    with pytest.raises(ValueError, match="client_factory"):
+        create_larex_action_app(
+            processor_id=PROCESSOR_ID,
+            dispatch_secret=SECRET,
+            handler=process,
+            client_factory=ActionClient.from_dispatch,
+            retry=RetryPolicy(),
+        )
 
 
 @pytest.mark.asyncio

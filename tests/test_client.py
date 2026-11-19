@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -1371,3 +1372,30 @@ def test_heartbeat_failure_grace_follows_larex_timeout(
 
     assert payload.heartbeat_timeout_seconds == timeout_seconds
     assert client.heartbeat_failure_grace == expected
+
+
+@pytest.mark.asyncio
+async def test_seconds_since_last_heartbeat_resets_on_success_only() -> None:
+    reachable = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not reachable:
+            raise httpx.ConnectError("Connection refused")
+        return httpx.Response(200, json={"cancelRequested": False})
+
+    payload = dispatch_payload_model()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            payload, client=http_client, retry=RetryPolicy(backoff=0), cancel_check_interval=0
+        )
+        context = ActionContext(payload=payload, client=client)
+        await asyncio.sleep(0.05)
+        assert context.seconds_since_last_heartbeat >= 0.05
+
+        await context.check_cancelled()
+        assert context.seconds_since_last_heartbeat < 0.05
+
+        reachable = False
+        await asyncio.sleep(0.05)
+        await context.check_cancelled()
+        assert context.seconds_since_last_heartbeat >= 0.05

@@ -10,6 +10,8 @@
 - Raise `ResultSubmissionError` when LAREX answers a result upload with a failed run, instead of treating the results as delivered.
 - Let `check_cancelled()` reuse a heartbeat younger than `cancel_check_interval` (default one second) instead of sending one per call; `run_subprocess` cancellation polling follows the same interval.
 - Let `check_cancelled()` and running `heartbeat()`/`log()` calls log and continue when LAREX is unreachable or answers with a transient error, raising only after LAREX's heartbeat timeout (`heartbeatTimeoutSeconds` from the dispatch, 30 minutes when LAREX does not send it, overridable with `RetryPolicy.heartbeat_failure_grace`) without a successful heartbeat. Heartbeats with a run report, failure reports, and cancellation acknowledgements still raise.
+- Add `retry=` to `create_larex_action_app` to pass a `RetryPolicy` without a custom `client_factory`.
+- Add `seconds_since_last_heartbeat` to `ActionClient` and `ActionContext` so processors can react to an outage before the SDK raises.
 
 - Reject a second image with the same page and variant in `ResultBuilder` and `ResultManifest`. One page can return several image variants, such as binary and grayscale.
 

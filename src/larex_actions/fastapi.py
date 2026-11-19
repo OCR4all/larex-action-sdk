@@ -19,6 +19,7 @@ from .models import (
     PreflightResponse,
 )
 from .nonce import NonceStore
+from .retry import RetryPolicy
 from .verifier import DispatchVerifier
 
 try:
@@ -57,7 +58,10 @@ def create_larex_action_app(
     max_concurrent_runs: int | None = None,
     processor_capabilities: ActionCapabilities | Mapping[str, bool] | None = None,
     parameter_value_providers: Mapping[str, ParameterValueProvider] | None = None,
+    retry: RetryPolicy | None = None,
 ) -> FastAPI:
+    if client_factory is not None and retry is not None:
+        raise ValueError("Pass retry to the client in client_factory instead of to the app")
     if max_dispatch_body_bytes <= 0:
         raise ValueError("max_dispatch_body_bytes must be positive")
     if max_concurrent_runs is not None and max_concurrent_runs <= 0:
@@ -109,6 +113,7 @@ def create_larex_action_app(
             enforce_url_security,
             resolved_allowed_origins,
             allow_insecure_local_urls,
+            retry,
             run_semaphore,
         )
         return {"status": "accepted", "runId": payload.run_id}
@@ -273,6 +278,7 @@ async def _run_handler(
     enforce_url_security: bool,
     allowed_callback_origins: set[str] | None,
     allow_insecure_local_urls: bool,
+    retry: RetryPolicy | None,
     run_semaphore: asyncio.Semaphore | None,
 ) -> None:
     if run_semaphore is not None:
@@ -284,6 +290,7 @@ async def _run_handler(
                 enforce_url_security,
                 allowed_callback_origins,
                 allow_insecure_local_urls,
+                retry,
             )
         return
     await _execute_handler(
@@ -293,6 +300,7 @@ async def _run_handler(
         enforce_url_security,
         allowed_callback_origins,
         allow_insecure_local_urls,
+        retry,
     )
 
 
@@ -303,6 +311,7 @@ async def _execute_handler(
     enforce_url_security: bool,
     allowed_callback_origins: set[str] | None,
     allow_insecure_local_urls: bool,
+    retry: RetryPolicy | None,
 ) -> None:
     client = (
         client_factory(payload)
@@ -312,6 +321,7 @@ async def _execute_handler(
             enforce_url_security=enforce_url_security,
             allowed_callback_origins=allowed_callback_origins,
             allow_insecure_local_urls=allow_insecure_local_urls,
+            retry=retry,
         )
     )
     async with client:
