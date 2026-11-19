@@ -26,6 +26,14 @@
 
 <!-- version list -->
 
+## v0.29.0 (2026-11-19)
+
+### Features
+
+- Retry result uploads until LAREX's heartbeat timeout has passed
+  ([`b73798f`](https://github.com/OCR4all/larex-action-sdk/commit/b73798f36dcd8199fc3734f9cd0e1fbf52713ba9))
+
+
 ## v0.28.0 (2026-11-19)
 
 ### Features
