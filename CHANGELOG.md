@@ -24,6 +24,22 @@
 
 <!-- version list -->
 
+## v0.27.0 (2026-11-19)
+
+### Documentation
+
+- Move the guide to the LAREX documentation and trim the README
+  ([`471bfd2`](https://github.com/OCR4all/larex-action-sdk/commit/471bfd25ebb0e5f6f68b7d11d5eeffa05757b751))
+
+### Features
+
+- **client**: Derive the heartbeat failure grace from heartbeatTimeoutSeconds
+  ([`aaeb157`](https://github.com/OCR4all/larex-action-sdk/commit/aaeb157f0b8fb7aafd2b797aaf668cb494aff1b5))
+
+- **client**: Retry and tolerate LAREX outages via RetryPolicy
+  ([`77fbff5`](https://github.com/OCR4all/larex-action-sdk/commit/77fbff549f5e6399e42ce1795c623faac0aed000))
+
+
 ## v0.26.0 (2026-11-17)
 
 ### Features
