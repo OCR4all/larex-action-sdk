@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -741,7 +742,7 @@ class ActionClient:
                 "This LAREX server did not advertise customFileResults support"
             )
         file_types = _result_file_types(result_files)
-        retry_deadline = time.monotonic() + self._retry.result_window
+        retry_deadline = self._result_retry_deadline()
         last_warned_at: float | None = None
         attempt = 0
         while True:
@@ -927,13 +928,16 @@ class ActionClient:
         now = time.monotonic()
         if last_warned_at is not None and now - last_warned_at < _RESULT_RETRY_WARNING_INTERVAL:
             return last_warned_at
+        remaining = deadline - now
         logger.warning(
-            "Could not deliver %s for LAREX run %s%s (%s); retrying for up to %.0f more seconds",
+            "Could not deliver %s for LAREX run %s%s (%s); %s",
             operation,
             self._run_id,
             f" page {page_id}" if page_id else "",
             reason,
-            max(0.0, deadline - now),
+            "retrying until LAREX answers"
+            if math.isinf(remaining)
+            else f"retrying for up to {max(0.0, remaining):.0f} more seconds",
         )
         return now
 
@@ -967,6 +971,12 @@ class ActionClient:
             **metadata,
         )
         await asyncio.sleep(retry_delay)
+
+    def _result_retry_deadline(self) -> float:
+        if self._retry.result_window is not None:
+            return time.monotonic() + self._retry.result_window
+        last_contact = self._last_heartbeat_at or self._created_at
+        return last_contact + self._heartbeat_failure_grace
 
     def _next_result_retry_delay(
         self, attempt: int, response: httpx.Response | None, deadline: float

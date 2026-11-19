@@ -6,7 +6,7 @@
 
 - Add `RetryPolicy`, passed as `retry=` to `ActionClient` and `ActionClient.from_dispatch(...)`, for all retry and failure-tolerance settings. `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` are deprecated and still apply.
 - Retry heartbeats, `pull_input()`, and file downloads on connection failures and transient HTTP responses, three attempts each; heartbeats use a 15-second request timeout (`RetryPolicy.heartbeat_request_timeout`).
-- Retry result uploads for up to 15 minutes with waits of at most 30 seconds instead of four attempts, and log a warning at most once a minute while retrying.
+- Retry result uploads with waits of at most 30 seconds until LAREX's heartbeat timeout has passed since the last successful heartbeat, instead of four attempts, and log a warning at most once a minute while retrying. `RetryPolicy(result_window=...)` sets a fixed window instead, and `heartbeat_failure_grace=math.inf` waits until LAREX answers.
 - Raise `ResultSubmissionError` when LAREX answers a result upload with a failed run, instead of treating the results as delivered.
 - Let `check_cancelled()` reuse a heartbeat younger than `cancel_check_interval` (default one second) instead of sending one per call; `run_subprocess` cancellation polling follows the same interval.
 - Let `check_cancelled()` and running `heartbeat()`/`log()` calls log and continue when LAREX is unreachable or answers with a transient error, raising only after LAREX's heartbeat timeout (`heartbeatTimeoutSeconds` from the dispatch, 30 minutes when LAREX does not send it, overridable with `RetryPolicy.heartbeat_failure_grace`) without a successful heartbeat. Heartbeats with a run report, failure reports, and cancellation acknowledgements still raise.

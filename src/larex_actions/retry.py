@@ -11,7 +11,7 @@ class RetryPolicy:
     heartbeat_attempts: int = 3
     heartbeat_request_timeout: float = 15.0
     heartbeat_failure_grace: float | None = None
-    result_window: float = 900.0
+    result_window: float | None = None
     result_max_attempts: int | None = None
 
     def __post_init__(self) -> None:
@@ -25,7 +25,7 @@ class RetryPolicy:
             raise ValueError("heartbeat_request_timeout must be positive")
         if self.heartbeat_failure_grace is not None and self.heartbeat_failure_grace < 0:
             raise ValueError("heartbeat_failure_grace must not be negative")
-        if self.result_window < 0:
+        if self.result_window is not None and self.result_window < 0:
             raise ValueError("result_window must not be negative")
         if self.result_max_attempts is not None and self.result_max_attempts < 1:
             raise ValueError("result_max_attempts must be at least 1")

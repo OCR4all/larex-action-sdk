@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import sys
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -314,6 +315,109 @@ async def test_result_retries_warn_once_per_interval(
     warnings = [r.getMessage() for r in caplog.records if r.name == "larex_actions.client"]
     assert len(warnings) == 1
     assert "Could not deliver complete for LAREX run run-1 (HTTP 503)" in warnings[0]
+
+
+class _FakeClock:
+    def __init__(self, start: float) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def perf_counter(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+@pytest.mark.asyncio
+async def test_result_retries_stop_once_larex_timeout_has_passed_since_last_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/heartbeat"):
+            return httpx.Response(200, json={"cancelRequested": False})
+        raise httpx.ConnectError("Connection refused")
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_failure_grace=600),
+        )
+        clock.now = 1_500.0
+        await client.heartbeat()
+        clock.now = 2_000.0
+        with pytest.raises(httpx.ConnectError):
+            await client.complete(results, "Done")
+
+    assert clock.now == pytest.approx(2_100.0)
+
+
+@pytest.mark.asyncio
+async def test_result_retries_wait_for_larex_with_infinite_grace(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 500:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"id": "run-1", "status": "COMPLETED"})
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_failure_grace=math.inf),
+        )
+        with caplog.at_level(logging.WARNING, logger="larex_actions.client"):
+            await client.complete(results, "Done")
+
+    assert attempts == 501
+    assert clock.now - 1_000.0 > 3_600
+    warnings = [r.getMessage() for r in caplog.records if r.name == "larex_actions.client"]
+    assert warnings
+    assert all(message.endswith("retrying until LAREX answers") for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_result_window_overrides_larex_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    results = ResultBuilder()
+    results.add_xml_bytes("page-1", b"<PcGts/>", "page.xml")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_failure_grace=0, result_window=120),
+        )
+        with pytest.raises(httpx.ConnectError):
+            await client.complete(results, "Done")
+
+    assert clock.now == pytest.approx(1_120.0)
 
 
 @pytest.mark.asyncio
