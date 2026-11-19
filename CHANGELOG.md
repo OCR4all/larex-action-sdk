@@ -28,6 +28,14 @@
 
 <!-- version list -->
 
+## v0.29.1 (2026-11-19)
+
+### Bug Fixes
+
+- **client**: Show deprecated retry argument warnings at the caller's line by default
+  ([`0b5e88e`](https://github.com/OCR4all/larex-action-sdk/commit/0b5e88e1bd8f98b262e38f5b41f0a39c3b39f4d5))
+
+
 ## v0.29.0 (2026-11-19)
 
 ### Features
