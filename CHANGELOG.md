@@ -31,6 +31,19 @@
 
 <!-- version list -->
 
+## v0.30.0 (2026-11-24)
+
+### Bug Fixes
+
+- **client**: Stop the retry backoff from overflowing after 1,024 attempts
+  ([`cd52696`](https://github.com/OCR4all/larex-action-sdk/commit/cd52696a5ee9eea474154a4116deb5e6c25bdd91))
+
+### Features
+
+- **client**: Retry input pulls and downloads until LAREX's heartbeat timeout has passed
+  ([`ba10a80`](https://github.com/OCR4all/larex-action-sdk/commit/ba10a800bac1ef8a495103c6e08b0e10a1468eed))
+
+
 ## v0.29.1 (2026-11-19)
 
 ### Bug Fixes
