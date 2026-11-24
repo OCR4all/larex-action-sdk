@@ -6,7 +6,7 @@ import logging
 import math
 import sys
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -657,7 +657,9 @@ async def test_transport_logging_does_not_include_transport_exception_text(
         raise httpx.ConnectError(exception_secret, request=request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(), client=http_client, retry=RetryPolicy(read_attempts=1)
+        )
         with (
             caplog.at_level(logging.DEBUG, logger="larex_actions.transport"),
             pytest.raises(httpx.ConnectError),
@@ -1444,6 +1446,114 @@ async def test_downloads_raise_after_read_max_attempts() -> None:
             await client.download_bytes(action_input.pages[0].xml[0])
 
     assert calls == 2
+
+
+async def _pull_input(client: ActionClient, tmp_path: Path) -> None:
+    await client.pull_input()
+
+
+async def _download_bytes(client: ActionClient, tmp_path: Path) -> None:
+    action_input = ActionInput.model_validate(_input_with_xml_file())
+    await client.download_bytes(action_input.pages[0].xml[0])
+
+
+async def _download_to_path(client: ActionClient, tmp_path: Path) -> None:
+    action_input = ActionInput.model_validate(_input_with_xml_file())
+    await client.download_to_path(action_input.pages[0].xml[0], tmp_path / "a.xml")
+
+
+_READ_OPERATIONS = [_pull_input, _download_bytes, _download_to_path]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", _READ_OPERATIONS)
+async def test_reads_retry_until_larex_timeout_has_passed_since_last_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    read: Callable[[ActionClient, Path], Awaitable[None]],
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/heartbeat"):
+            return httpx.Response(200, json={"cancelRequested": False})
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(heartbeatTimeoutSeconds=600), client=http_client
+        )
+        clock.now = 1_500.0
+        await client.heartbeat()
+        clock.now = 2_000.0
+        with pytest.raises(httpx.RemoteProtocolError):
+            await read(client, tmp_path)
+
+    assert clock.now == pytest.approx(2_100.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", _READ_OPERATIONS)
+async def test_reads_make_three_attempts_after_larex_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    read: Callable[[ActionClient, Path], Awaitable[None]],
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("Connection refused")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(dispatch_payload_model(), client=http_client)
+        clock.now = 10_000.0
+        with pytest.raises(httpx.ConnectError):
+            await read(client, tmp_path)
+
+    assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_reads_wait_for_larex_with_infinite_grace(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    clock = _FakeClock(1_000.0)
+    monkeypatch.setattr("larex_actions.client.time", clock)
+    monkeypatch.setattr("larex_actions.client.asyncio.sleep", clock.sleep)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 1_500:
+            return httpx.Response(503)
+        return httpx.Response(200, content=b"<PcGts/>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = ActionClient.from_dispatch(
+            dispatch_payload_model(),
+            client=http_client,
+            retry=RetryPolicy(heartbeat_failure_grace=math.inf),
+        )
+        with caplog.at_level(logging.WARNING, logger="larex_actions.client"):
+            await _download_bytes(client, tmp_path)
+
+    assert attempts == 1_501
+    elapsed = clock.now - 1_000.0
+    warnings = [r.getMessage() for r in caplog.records if r.name == "larex_actions.client"]
+    assert 1 < len(warnings) <= elapsed / 60 + 1
+    assert all(
+        message.startswith("Could not complete download_bytes for LAREX run run-1")
+        and message.endswith("(HTTP 503); retrying until LAREX answers")
+        for message in warnings
+    )
 
 
 @pytest.mark.asyncio

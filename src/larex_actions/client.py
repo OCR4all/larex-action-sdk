@@ -194,6 +194,8 @@ class ActionClient:
             await self._client.aclose()
 
     async def pull_input(self) -> ActionInput:
+        retry_deadline = self._heartbeat_deadline()
+        last_warned_at: float | None = None
         attempt = 0
         while True:
             attempt += 1
@@ -205,7 +207,15 @@ class ActionClient:
                 action_input = ActionInput.model_validate(response.json())
                 break
             except Exception as exc:
-                await self._retry_read_or_raise("pull_input", attempt, started, response, exc)
+                last_warned_at = await self._retry_read_or_raise(
+                    "pull_input",
+                    attempt,
+                    started,
+                    response,
+                    exc,
+                    retry_deadline,
+                    last_warned_at,
+                )
         self._kind = self._kind or action_input.kind
         self._evaluation_output_mode = (
             self._evaluation_output_mode or action_input.evaluation_output_mode
@@ -448,6 +458,8 @@ class ActionClient:
         raise RuntimeError("Heartbeat retry loop exited unexpectedly")
 
     async def download_bytes(self, file: ActionFile) -> bytes:
+        retry_deadline = self._heartbeat_deadline()
+        last_warned_at: float | None = None
         attempt = 0
         while True:
             attempt += 1
@@ -460,12 +472,14 @@ class ActionClient:
                 content = response.content
                 break
             except Exception as exc:
-                await self._retry_read_or_raise(
+                last_warned_at = await self._retry_read_or_raise(
                     "download_bytes",
                     attempt,
                     started,
                     response,
                     exc,
+                    retry_deadline,
+                    last_warned_at,
                     page_id=self._file_page_ids.get(file.id),
                     file_id=file.id,
                     file_type=_download_file_type(file),
@@ -485,6 +499,8 @@ class ActionClient:
 
     async def download_to_path(self, file: ActionFile, path: str | Path) -> Path:
         target = Path(path)
+        retry_deadline = self._heartbeat_deadline()
+        last_warned_at: float | None = None
         attempt = 0
         while True:
             attempt += 1
@@ -507,12 +523,14 @@ class ActionClient:
                             byte_count += len(chunk)
                 break
             except Exception as exc:
-                await self._retry_read_or_raise(
+                last_warned_at = await self._retry_read_or_raise(
                     "download_to_path",
                     attempt,
                     started,
                     response,
                     exc,
+                    retry_deadline,
+                    last_warned_at,
                     page_id=self._file_page_ids.get(file.id),
                     file_id=file.id,
                     file_type=_download_file_type(file),
@@ -780,8 +798,12 @@ class ActionClient:
                         attempt=attempt,
                     )
                     raise
-                last_warned_at = self._warn_result_retry(
-                    operation, page_id, type(exc).__name__, retry_deadline, last_warned_at
+                last_warned_at = self._warn_retry(
+                    f"deliver {operation}",
+                    page_id,
+                    type(exc).__name__,
+                    retry_deadline,
+                    last_warned_at,
                 )
                 self._log_transport(
                     operation,
@@ -819,8 +841,8 @@ class ActionClient:
                 else None
             )
             if retry_delay is not None:
-                last_warned_at = self._warn_result_retry(
-                    operation,
+                last_warned_at = self._warn_retry(
+                    f"deliver {operation}",
                     page_id,
                     f"HTTP {received_response.status_code}",
                     retry_deadline,
@@ -918,21 +940,21 @@ class ActionClient:
         )
         transport_logger.debug("LAREX SDK transport %s", rendered)
 
-    def _warn_result_retry(
+    def _warn_retry(
         self,
-        operation: str,
+        task: str,
         page_id: str | None,
         reason: str,
         deadline: float,
         last_warned_at: float | None,
     ) -> float | None:
         now = time.monotonic()
-        if last_warned_at is not None and now - last_warned_at < _RESULT_RETRY_WARNING_INTERVAL:
+        if last_warned_at is not None and now - last_warned_at < _RETRY_WARNING_INTERVAL:
             return last_warned_at
         remaining = deadline - now
         logger.warning(
-            "Could not deliver %s for LAREX run %s%s (%s); %s",
-            operation,
+            "Could not %s for LAREX run %s%s (%s); %s",
+            task,
             self._run_id,
             f" page {page_id}" if page_id else "",
             reason,
@@ -949,18 +971,34 @@ class ActionClient:
         started: float,
         response: httpx.Response | None,
         error: Exception,
+        deadline: float,
+        last_warned_at: float | None,
+        *,
+        page_id: str | None = None,
         **metadata: object,
-    ) -> None:
+    ) -> float | None:
         retryable = isinstance(error, httpx.TransportError) or (
             isinstance(error, httpx.HTTPStatusError)
             and _is_retryable_status(error.response.status_code)
         )
-        if not retryable or attempt >= self._retry.read_attempts:
+        retry_delay = (
+            self._next_read_retry_delay(attempt, response, deadline) if retryable else None
+        )
+        if retry_delay is None:
             self._log_transport_failure(
-                operation, started, response, error, attempt=attempt, **metadata
+                operation, started, response, error, attempt=attempt, page_id=page_id, **metadata
             )
             raise error
-        retry_delay = self._retry_delay(attempt, response)
+        if self._retry.read_attempts is None and time.monotonic() < deadline:
+            last_warned_at = self._warn_retry(
+                f"complete {operation}",
+                page_id,
+                f"HTTP {error.response.status_code}"
+                if isinstance(error, httpx.HTTPStatusError)
+                else type(error).__name__,
+                deadline,
+                last_warned_at,
+            )
         self._log_transport(
             operation,
             "retry",
@@ -969,15 +1007,33 @@ class ActionClient:
             attempt=attempt,
             error_type=type(error).__name__,
             retry_delay_seconds=retry_delay,
+            page_id=page_id,
             **metadata,
         )
         await asyncio.sleep(retry_delay)
+        return last_warned_at
+
+    def _heartbeat_deadline(self) -> float:
+        last_contact = self._last_heartbeat_at or self._created_at
+        return last_contact + self._heartbeat_failure_grace
+
+    def _next_read_retry_delay(
+        self, attempt: int, response: httpx.Response | None, deadline: float
+    ) -> float | None:
+        retry_delay = self._retry_delay(attempt, response)
+        if self._retry.read_attempts is not None:
+            return retry_delay if attempt < self._retry.read_attempts else None
+        if attempt < _MIN_READ_ATTEMPTS:
+            return retry_delay
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        return min(retry_delay, remaining)
 
     def _result_retry_deadline(self) -> float:
         if self._retry.result_window is not None:
             return time.monotonic() + self._retry.result_window
-        last_contact = self._last_heartbeat_at or self._created_at
-        return last_contact + self._heartbeat_failure_grace
+        return self._heartbeat_deadline()
 
     def _next_result_retry_delay(
         self, attempt: int, response: httpx.Response | None, deadline: float
@@ -1355,7 +1411,8 @@ def _is_retryable_status(status_code: int) -> bool:
 
 
 _RESULT_ERROR_BODY_LIMIT = 2_048
-_RESULT_RETRY_WARNING_INTERVAL = 60.0
+_RETRY_WARNING_INTERVAL = 60.0
+_MIN_READ_ATTEMPTS = 3
 _MAX_BACKOFF_EXPONENT = 64
 _DEFAULT_HEARTBEAT_FAILURE_GRACE = 1800.0
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")

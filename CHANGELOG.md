@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Retry `pull_input()` and file downloads until LAREX's heartbeat timeout has passed since the last successful heartbeat, like result uploads but with at least three attempts, instead of three attempts in total, and log a warning at most once a minute while retrying. `RetryPolicy(read_attempts=...)` now defaults to `None` and still sets a fixed number of attempts; `read_attempts=3` restores the previous behavior.
 - Fix an `OverflowError` after 1,024 retries of one operation, reachable with `heartbeat_failure_grace=math.inf` or a long `result_window`.
 
 - Warn about the deprecated `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` arguments with a `FutureWarning` that Python shows by default and that points at the caller's line, also when they are passed to `ActionClient.from_dispatch(...)`.

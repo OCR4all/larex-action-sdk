@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class RetryPolicy:
     backoff: float = 0.5
     max_backoff: float = 30.0
-    read_attempts: int = 3
+    read_attempts: int | None = None
     heartbeat_attempts: int = 3
     heartbeat_request_timeout: float = 15.0
     heartbeat_failure_grace: float | None = None
@@ -17,7 +17,7 @@ class RetryPolicy:
     def __post_init__(self) -> None:
         if self.backoff < 0 or self.max_backoff < 0:
             raise ValueError("backoff values must not be negative")
-        if self.read_attempts < 1:
+        if self.read_attempts is not None and self.read_attempts < 1:
             raise ValueError("read_attempts must be at least 1")
         if self.heartbeat_attempts < 1:
             raise ValueError("heartbeat_attempts must be at least 1")
