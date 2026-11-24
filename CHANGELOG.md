@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix an `OverflowError` after 1,024 retries of one operation, reachable with `heartbeat_failure_grace=math.inf` or a long `result_window`.
+
 - Warn about the deprecated `result_max_attempts`, `result_retry_backoff`, and `result_retry_max_backoff` arguments with a `FutureWarning` that Python shows by default and that points at the caller's line, also when they are passed to `ActionClient.from_dispatch(...)`.
 
 - Remove the `/ready` route. LAREX never polled it, and dispatches beyond `max_concurrent_runs` are queued rather than refused.

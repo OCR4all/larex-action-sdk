@@ -1002,7 +1002,7 @@ class ActionClient:
                     pass
         exponential = min(
             self._retry.max_backoff,
-            self._retry.backoff * (2 ** (attempt - 1)),
+            self._retry.backoff * (2 ** min(attempt - 1, _MAX_BACKOFF_EXPONENT)),
         )
         return random.uniform(0, exponential)
 
@@ -1356,6 +1356,7 @@ def _is_retryable_status(status_code: int) -> bool:
 
 _RESULT_ERROR_BODY_LIMIT = 2_048
 _RESULT_RETRY_WARNING_INTERVAL = 60.0
+_MAX_BACKOFF_EXPONENT = 64
 _DEFAULT_HEARTBEAT_FAILURE_GRACE = 1800.0
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+")
 _TRANSPORT_LOG_METADATA_FIELDS = frozenset(
